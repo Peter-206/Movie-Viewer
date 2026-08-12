@@ -3,6 +3,7 @@ import argparse
 import difflib
 import json
 import re
+import sqlite3
 import tkinter as tk
 import urllib.error
 import urllib.parse
@@ -34,11 +35,136 @@ HTTP_HEADERS = {
 
 @dataclass(frozen=True)
 class MovieItem:
+    id: int
     title: str
     folder: str
     video_path: Optional[str]
     cover_path: Optional[str]
     thumb_path: Optional[str]
+    year: Optional[int] = None
+    studio: str = ""
+    presentation: str = ""
+    genres: tuple[str, ...] = ()
+    watch_count: int = 0
+
+
+class MovieCatalog:
+    """Persistent metadata layered over the folders on disk."""
+
+    def __init__(self, path: str):
+        self.connection = sqlite3.connect(path)
+        self.connection.execute("PRAGMA foreign_keys = ON")
+        self.connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS movies (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                folder_path TEXT NOT NULL UNIQUE,
+                video_path TEXT,
+                cover_path TEXT,
+                thumb_path TEXT,
+                year INTEGER,
+                studio TEXT NOT NULL DEFAULT '',
+                presentation TEXT NOT NULL DEFAULT ''
+                    CHECK (presentation IN ('', 'Animation', 'Live action', 'Hybrid'))
+            );
+            CREATE TABLE IF NOT EXISTS genres (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE
+            );
+            CREATE TABLE IF NOT EXISTS movie_genres (
+                movie_id INTEGER NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+                genre_id INTEGER NOT NULL REFERENCES genres(id) ON DELETE CASCADE,
+                PRIMARY KEY (movie_id, genre_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_movies_studio ON movies(studio);
+            CREATE INDEX IF NOT EXISTS idx_movies_presentation ON movies(presentation);
+            """
+        )
+        columns = {row[1] for row in self.connection.execute("PRAGMA table_info(movies)")}
+        if "watch_count" not in columns:
+            self.connection.execute(
+                "ALTER TABLE movies ADD COLUMN watch_count INTEGER NOT NULL DEFAULT 0"
+            )
+        self.connection.commit()
+
+    def sync(self, scanned: List[MovieItem]) -> None:
+        with self.connection:
+            for item in scanned:
+                clean_title, detected_year = movie_name_and_year(item.title)
+                self.connection.execute(
+                    """
+                    INSERT INTO movies
+                        (title, folder_path, video_path, cover_path, thumb_path, year)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(folder_path) DO UPDATE SET
+                        video_path=excluded.video_path,
+                        cover_path=excluded.cover_path,
+                        thumb_path=excluded.thumb_path
+                    """,
+                    (clean_title, item.folder, item.video_path, item.cover_path,
+                     item.thumb_path, detected_year),
+                )
+
+    def load(self) -> List[MovieItem]:
+        rows = self.connection.execute(
+            """
+            SELECT m.id, m.title, m.folder_path, m.video_path, m.cover_path,
+                   m.thumb_path, m.year, m.studio, m.presentation,
+                   COALESCE(group_concat(g.name, '|'), ''), m.watch_count
+            FROM movies m
+            LEFT JOIN movie_genres mg ON mg.movie_id = m.id
+            LEFT JOIN genres g ON g.id = mg.genre_id
+            GROUP BY m.id
+            """
+        ).fetchall()
+        return [
+            MovieItem(
+                id=row[0], title=row[1], folder=row[2], video_path=row[3],
+                cover_path=row[4], thumb_path=row[5], year=row[6], studio=row[7],
+                presentation=row[8], genres=tuple(filter(None, row[9].split("|"))),
+                watch_count=row[10],
+            )
+            for row in rows if os.path.isdir(row[2])
+        ]
+
+    def save_metadata(self, movie_id: int, title: str, year: Optional[int],
+                      studio: str, presentation: str, genres: List[str]) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE movies SET title=?, year=?, studio=?, presentation=? WHERE id=?",
+                (title, year, studio, presentation, movie_id),
+            )
+            self.connection.execute("DELETE FROM movie_genres WHERE movie_id=?", (movie_id,))
+            for genre in sorted({g.strip() for g in genres if g.strip()}, key=str.casefold):
+                self.connection.execute("INSERT OR IGNORE INTO genres(name) VALUES (?)", (genre,))
+                genre_id = self.connection.execute(
+                    "SELECT id FROM genres WHERE name=? COLLATE NOCASE", (genre,)
+                ).fetchone()[0]
+                self.connection.execute(
+                    "INSERT INTO movie_genres(movie_id, genre_id) VALUES (?, ?)",
+                    (movie_id, genre_id),
+                )
+
+    def increment_watch_count(self, movie_id: int) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE movies SET watch_count = watch_count + 1 WHERE id=?", (movie_id,)
+            )
+
+    def choices(self, column: str) -> List[str]:
+        if column == "genre":
+            rows = self.connection.execute("SELECT name FROM genres ORDER BY name COLLATE NOCASE")
+        elif column in {"studio", "presentation"}:
+            rows = self.connection.execute(
+                f"SELECT DISTINCT {column} FROM movies WHERE {column} <> '' ORDER BY {column} COLLATE NOCASE"
+            )
+        else:
+            raise ValueError(f"Unsupported choice column: {column}")
+        return [row[0] for row in rows]
+
+    def close(self) -> None:
+        self.connection.close()
 
 
 def find_cover(folder: str) -> Optional[str]:
@@ -109,7 +235,7 @@ def scan_movies(root_dir: str, thumb_size: tuple[int, int], build_thumbs: bool =
 
     items: List[MovieItem] = []
     for name in sorted(os.listdir(root_dir), key=str.lower):
-        if name.startswith("."):
+        if name.startswith((".", "__")):
             continue
         folder = os.path.join(root_dir, name)
         if not os.path.isdir(folder):
@@ -124,6 +250,7 @@ def scan_movies(root_dir: str, thumb_size: tuple[int, int], build_thumbs: bool =
 
         items.append(
             MovieItem(
+                id=0,
                 title=name,
                 folder=folder,
                 video_path=find_video(folder),
@@ -138,7 +265,7 @@ def scan_movies(root_dir: str, thumb_size: tuple[int, int], build_thumbs: bool =
 def build_thumbnails(root_dir: str, thumb_size: tuple[int, int]) -> int:
     count = 0
     for name in os.listdir(root_dir):
-        if name.startswith("."):
+        if name.startswith((".", "__")):
             continue
         folder = os.path.join(root_dir, name)
         if not os.path.isdir(folder):
@@ -225,7 +352,7 @@ def fetch_missing_covers(root_dir: str, timeout: int = 20) -> tuple[int, int, in
     """Download IMDb primary posters only for movie folders lacking a cover."""
     downloaded = skipped = failed = 0
     for folder_name in sorted(os.listdir(root_dir), key=str.lower):
-        if folder_name.startswith("."):
+        if folder_name.startswith((".", "__")):
             continue
         folder = os.path.join(root_dir, folder_name)
         if not os.path.isdir(folder):
@@ -308,7 +435,10 @@ class MovieBrowser(tk.Tk):
         self.page_size = cols * rows
         self.thumb_size = (thumb_w, thumb_h)
 
-        self.all_items = scan_movies(root_dir, self.thumb_size, build_thumbs=build_thumbs_on_scan)
+        self.catalog = MovieCatalog(os.path.join(root_dir, "movies.db"))
+        scanned = scan_movies(root_dir, self.thumb_size, build_thumbs=build_thumbs_on_scan)
+        self.catalog.sync(scanned)
+        self.all_items = self.catalog.load()
         self.filtered = list(self.all_items)
 
         self.page = 0
@@ -319,10 +449,15 @@ class MovieBrowser(tk.Tk):
 
         self._build_ui()
         self._render_page()
+        self.protocol("WM_DELETE_WINDOW", self._close)
 
         # Keyboard paging
         self.bind("<Left>", lambda _e: self._prev_page())
         self.bind("<Right>", lambda _e: self._next_page())
+
+    def _close(self):
+        self.catalog.close()
+        self.destroy()
 
     def _build_ui(self):
         top = ttk.Frame(self, padding=10)
@@ -338,6 +473,37 @@ class MovieBrowser(tk.Tk):
         ent.bind("<KeyRelease>", lambda _e: self._apply_filter())
 
         ttk.Button(top, text="Rescan", command=self._rescan).pack(side="left", padx=6)
+
+        filters = ttk.Frame(self, padding=(10, 0, 10, 8))
+        filters.pack(fill="x")
+        self.genre_var = tk.StringVar(value="All genres")
+        self.studio_var = tk.StringVar(value="All studios")
+        self.presentation_var = tk.StringVar(value="All types")
+        self.sort_var = tk.StringVar(value="Title (A-Z)")
+
+        ttk.Label(filters, text="Genre:").pack(side="left")
+        self.genre_combo = ttk.Combobox(filters, textvariable=self.genre_var, state="readonly", width=16)
+        self.genre_combo.pack(side="left", padx=(5, 12))
+        ttk.Label(filters, text="Studio/brand:").pack(side="left")
+        self.studio_combo = ttk.Combobox(filters, textvariable=self.studio_var, state="readonly", width=16)
+        self.studio_combo.pack(side="left", padx=(5, 12))
+        ttk.Label(filters, text="Type:").pack(side="left")
+        self.presentation_combo = ttk.Combobox(
+            filters, textvariable=self.presentation_var, state="readonly", width=13
+        )
+        self.presentation_combo.pack(side="left", padx=(5, 12))
+        ttk.Label(filters, text="Sort:").pack(side="left")
+        self.sort_combo = ttk.Combobox(
+            filters, textvariable=self.sort_var, state="readonly", width=15,
+            values=(
+                "Title (A-Z)", "Title (Z-A)", "Year (newest)", "Year (oldest)",
+                "Most watched", "Least watched",
+            ),
+        )
+        self.sort_combo.pack(side="left", padx=(5, 0))
+        for combo in (self.genre_combo, self.studio_combo, self.presentation_combo, self.sort_combo):
+            combo.bind("<<ComboboxSelected>>", lambda _e: self._apply_filter())
+        self._refresh_filter_choices()
 
         nav = ttk.Frame(self, padding=(10, 0, 10, 10))
         nav.pack(fill="x")
@@ -413,22 +579,111 @@ class MovieBrowser(tk.Tk):
 
     def _apply_filter(self):
         q = self.search_var.get().strip().lower()
-        if not q:
-            self.filtered = list(self.all_items)
+        genre = self.genre_var.get()
+        studio = self.studio_var.get()
+        presentation = self.presentation_var.get()
+        self.filtered = [
+            m for m in self.all_items
+            if (not q or q in m.title.lower())
+            and (genre == "All genres" or genre in m.genres)
+            and (studio == "All studios" or studio == m.studio)
+            and (presentation == "All types" or presentation == m.presentation)
+        ]
+        sort = self.sort_var.get()
+        if sort == "Title (Z-A)":
+            self.filtered.sort(key=lambda m: m.title.casefold(), reverse=True)
+        elif sort == "Year (newest)":
+            self.filtered.sort(key=lambda m: (m.year is not None, m.year or 0, m.title.casefold()), reverse=True)
+        elif sort == "Year (oldest)":
+            self.filtered.sort(key=lambda m: (m.year is None, m.year or 0, m.title.casefold()))
+        elif sort == "Most watched":
+            self.filtered.sort(key=lambda m: (-m.watch_count, m.title.casefold()))
+        elif sort == "Least watched":
+            self.filtered.sort(key=lambda m: (m.watch_count, m.title.casefold()))
         else:
-            self.filtered = [m for m in self.all_items if q in m.title.lower()]
+            self.filtered.sort(key=lambda m: m.title.casefold())
         self.page = 0
         self._render_page()
 
+    def _refresh_filter_choices(self):
+        self.genre_combo["values"] = ("All genres", *self.catalog.choices("genre"))
+        self.studio_combo["values"] = ("All studios", *self.catalog.choices("studio"))
+        self.presentation_combo["values"] = ("All types", *self.catalog.choices("presentation"))
+
     def _rescan(self):
         try:
-            self.all_items = scan_movies(self.root_dir, self.thumb_size, build_thumbs=False)
+            scanned = scan_movies(self.root_dir, self.thumb_size, build_thumbs=False)
+            self.catalog.sync(scanned)
+            self.all_items = self.catalog.load()
         except Exception as e:
             messagebox.showerror("Rescan failed", str(e))
             return
 
         self.thumb_cache.clear()
+        self._refresh_filter_choices()
         self._apply_filter()
+
+    def _edit_metadata(self, item: MovieItem):
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Edit metadata - {item.title}")
+        dialog.transient(self)
+        dialog.grab_set()
+        body = ttk.Frame(dialog, padding=16)
+        body.pack(fill="both", expand=True)
+
+        fields = {}
+        values = {
+            "Title": item.title,
+            "Year": str(item.year or ""),
+            "Studio/brand": item.studio,
+            "Genres (comma-separated)": ", ".join(item.genres),
+        }
+        for row, (label, value) in enumerate(values.items()):
+            ttk.Label(body, text=label + ":").grid(row=row, column=0, sticky="w", pady=4)
+            variable = tk.StringVar(value=value)
+            ttk.Entry(body, textvariable=variable, width=48).grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=4)
+            fields[label] = variable
+
+        ttk.Label(body, text="Type:").grid(row=4, column=0, sticky="w", pady=4)
+        type_var = tk.StringVar(value=item.presentation)
+        ttk.Combobox(
+            body, textvariable=type_var, state="readonly", width=45,
+            values=("", "Animation", "Live action", "Hybrid"),
+        ).grid(row=4, column=1, sticky="ew", padx=(10, 0), pady=4)
+        ttk.Label(
+            body,
+            text=(f"Watched: {item.watch_count} time(s). Use the most specific studio/brand: "
+                  "Marvel instead of Disney for Marvel movies."),
+            wraplength=430,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 12))
+
+        def save():
+            year_text = fields["Year"].get().strip()
+            if year_text and (not year_text.isdigit() or len(year_text) != 4):
+                messagebox.showerror("Invalid year", "Year must be four digits or blank.", parent=dialog)
+                return
+            title = fields["Title"].get().strip()
+            if not title:
+                messagebox.showerror("Invalid title", "Title cannot be blank.", parent=dialog)
+                return
+            genres = fields["Genres (comma-separated)"].get().split(",")
+            self.catalog.save_metadata(
+                item.id, title, int(year_text) if year_text else None,
+                fields["Studio/brand"].get().strip(), type_var.get(), genres,
+            )
+            self.all_items = self.catalog.load()
+            self._refresh_filter_choices()
+            self._apply_filter()
+            dialog.destroy()
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=6, column=0, columnspan=2, sticky="e")
+        ttk.Button(buttons, text="Open folder", command=lambda: self._open_folder(item)).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Save", command=save).pack(side="left", padx=4)
+        body.grid_columnconfigure(1, weight=1)
+        dialog.bind("<Return>", lambda _e: save())
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
 
     def _max_page(self) -> int:
         if not self.filtered:
@@ -451,6 +706,9 @@ class MovieBrowser(tk.Tk):
             return
         try:
             os.startfile(item.video_path)
+            self.catalog.increment_watch_count(item.id)
+            self.all_items = self.catalog.load()
+            self._apply_filter()
         except Exception as e:
             messagebox.showerror("Could not open video", str(e))
 
@@ -523,8 +781,8 @@ class MovieBrowser(tk.Tk):
 
                 poster.bind("<Button-1>", lambda e, it=item: self._play(it))
                 title.bind("<Button-1>", lambda e, it=item: self._play(it))
-                poster.bind("<Button-3>", lambda e, it=item: self._open_folder(it))
-                title.bind("<Button-3>", lambda e, it=item: self._open_folder(it))
+                poster.bind("<Button-3>", lambda e, it=item: self._edit_metadata(it))
+                title.bind("<Button-3>", lambda e, it=item: self._edit_metadata(it))
             else:
                 poster.config(image=self.placeholder)
                 poster.image = self.placeholder
