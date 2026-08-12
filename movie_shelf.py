@@ -17,12 +17,16 @@ from PIL import Image, ImageTk
 MOVIE_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".wmv", ".webm"}
 IMG_EXTS = {".jpg", ".jpeg", ".png"}
 
-NAVY_BG = "#0b1220"      # deep navy
-TILE_BG = "#0f1a2e"      # slightly lighter navy for tiles
-HOVER_BG = "#142445"     # hover highlight
-TEXT_FG = "#ffffff"
-SUBTLE_BORDER = "#1c2e52"
-HOVER_BORDER = "#4c6fff"
+NAVY_BG = "#090b10"
+PANEL_BG = "#11141b"
+TILE_BG = "#151922"
+HOVER_BG = "#1c2230"
+TEXT_FG = "#f6f7fb"
+MUTED_FG = "#9299a8"
+ACCENT = "#f04455"
+ACCENT_HOVER = "#ff5c6b"
+SUBTLE_BORDER = "#262c38"
+HOVER_BORDER = "#f04455"
 
 
 THUMB_NAME = "thumb.jpg"
@@ -417,17 +421,45 @@ class MovieBrowser(tk.Tk):
 
         style.configure("TFrame", background=NAVY_BG)
         style.configure("TLabel", background=NAVY_BG, foreground=TEXT_FG)
-
-        style.configure("Nav.TFrame", background=NAVY_BG)
+        style.configure("Panel.TFrame", background=PANEL_BG)
+        style.configure("Tile.TFrame", background=TILE_BG)
         style.configure("TileHover.TFrame", background=HOVER_BG)
-        style.configure("Status.TLabel", background=NAVY_BG, foreground=TEXT_FG, font=("Segoe UI", 11))
+        style.configure("Status.TLabel", foreground=MUTED_FG, font=("Segoe UI", 10))
+        style.configure("Title.TLabel", background=TILE_BG, foreground=TEXT_FG, font=("Segoe UI Semibold", 12))
+        style.configure("TitleHover.TLabel", background=HOVER_BG, foreground=TEXT_FG, font=("Segoe UI Semibold", 12))
+        style.configure("Meta.TLabel", background=TILE_BG, foreground=MUTED_FG, font=("Segoe UI", 9))
+        style.configure("MetaHover.TLabel", background=HOVER_BG, foreground="#b8bfcc", font=("Segoe UI", 9))
+        style.configure("HeroTitle.TLabel", foreground=TEXT_FG, font=("Segoe UI Semibold", 34))
+        style.configure("Eyebrow.TLabel", foreground=ACCENT, font=("Segoe UI Semibold", 10))
+        style.configure("Body.TLabel", foreground="#c4c8d2", font=("Segoe UI", 12))
+        style.configure("TButton", background="#202631", foreground=TEXT_FG, borderwidth=0,
+                        font=("Segoe UI Semibold", 10), padding=(14, 9))
+        style.map("TButton", background=[("active", "#2a3240")])
+        style.configure("Accent.TButton", background=ACCENT, foreground="white", padding=(20, 11))
+        style.map("Accent.TButton", background=[("active", ACCENT_HOVER), ("disabled", "#57272d")])
+        style.configure("TEntry", fieldbackground="#171b24", foreground=TEXT_FG, insertcolor=TEXT_FG,
+                        bordercolor=SUBTLE_BORDER, padding=8)
+        style.configure("Search.TEntry", fieldbackground="#171b24", foreground=TEXT_FG,
+                        insertcolor=TEXT_FG, bordercolor=SUBTLE_BORDER,
+                        font=("Segoe UI", 16), padding=(14, 12))
+        style.configure("TCombobox", fieldbackground="#171b24", background="#171b24",
+                        foreground=TEXT_FG, arrowcolor=MUTED_FG, bordercolor=SUBTLE_BORDER, padding=6)
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", "#171b24")],
+            background=[("readonly", "#171b24"), ("active", "#252c39")],
+            foreground=[("readonly", TEXT_FG)],
+            arrowcolor=[("readonly", "#c4c8d2")],
+        )
+        # The popup is a native Tk listbox. Only set its basic colors; selection
+        # and focus remain under Tk's control so mouse and keyboard input work.
+        self.option_add("*TCombobox*Listbox.background", "#171b24")
+        self.option_add("*TCombobox*Listbox.foreground", TEXT_FG)
+        self.option_add("*TCombobox*Listbox.selectBackground", "#3b4558")
+        self.option_add("*TCombobox*Listbox.selectForeground", TEXT_FG)
 
-        # Tile/card styles
-        style.configure("Tile.TFrame")
-        style.configure("TitleHover.TLabel", background=HOVER_BG, foreground=TEXT_FG, font=("Segoe UI", 13, "bold"))
-        style.configure("Title.TLabel", foreground=TEXT_FG, font=("Segoe UI", 13, "bold"))
-
-        self.title("Movie Browser")
+        self.title("Movie Library")
+        self.minsize(980, 680)
 
         self.root_dir = root_dir
         self.cols = cols
@@ -443,17 +475,19 @@ class MovieBrowser(tk.Tk):
 
         self.page = 0
         self.thumb_cache: dict[str, ImageTk.PhotoImage] = {}
+        self.detail_image: Optional[ImageTk.PhotoImage] = None
         self.loading_job: Optional[str] = None
 
         self.placeholder = ImageTk.PhotoImage(Image.new("RGB", self.thumb_size, (30, 30, 30)))
 
-        self._build_ui()
+        self._build_modern_ui()
         self._render_page()
         self.protocol("WM_DELETE_WINDOW", self._close)
 
         # Keyboard paging
-        self.bind("<Left>", lambda _e: self._prev_page())
-        self.bind("<Right>", lambda _e: self._next_page())
+        self.bind("<Left>", lambda _e: self._prev_page() if self.browser_view.winfo_ismapped() else None)
+        self.bind("<Right>", lambda _e: self._next_page() if self.browser_view.winfo_ismapped() else None)
+        self.bind("<Escape>", lambda _e: self._show_browser() if self.detail_view.winfo_ismapped() else None)
 
     def _close(self):
         self.catalog.close()
@@ -576,6 +610,149 @@ class MovieBrowser(tk.Tk):
             self.grid.grid_columnconfigure(c, weight=1, uniform="gridcol")
         for r in range(self.rows):
             self.grid.grid_rowconfigure(r, weight=1, uniform="gridrow")
+
+    def _build_modern_ui(self):
+        self.browser_view = ttk.Frame(self)
+        self.browser_view.pack(fill="both", expand=True)
+
+        header = ttk.Frame(self.browser_view, padding=(26, 18, 26, 12))
+        header.pack(fill="x")
+
+        left_group = ttk.Frame(header)
+        left_group.grid(row=0, column=0, sticky="w")
+        ttk.Label(left_group, text="Alex's Movies",
+                  font=("Segoe UI Semibold", 28)).pack(anchor="w", pady=(0, 10))
+
+        filters = ttk.Frame(left_group)
+        filters.pack(anchor="w")
+        self.genre_var = tk.StringVar(value="All genres")
+        self.studio_var = tk.StringVar(value="All studios")
+        self.presentation_var = tk.StringVar(value="All types")
+        self.sort_var = tk.StringVar(value="Title (A-Z)")
+        self.genre_combo = ttk.Combobox(filters, textvariable=self.genre_var, state="readonly", width=16)
+        self.genre_combo.pack(side="left", padx=(0, 10))
+        self.studio_combo = ttk.Combobox(filters, textvariable=self.studio_var, state="readonly", width=16)
+        self.studio_combo.pack(side="left", padx=(0, 10))
+        self.presentation_combo = ttk.Combobox(filters, textvariable=self.presentation_var, state="readonly", width=13)
+        self.presentation_combo.pack(side="left")
+
+        self.search_var = tk.StringVar()
+        search_group = ttk.Frame(header)
+        search_group.grid(row=0, column=1, padx=30)
+        ttk.Label(search_group, text="Search library", foreground=MUTED_FG,
+                  font=("Segoe UI Semibold", 16)).pack(anchor="w", pady=(0, 6))
+        search = ttk.Entry(search_group, textvariable=self.search_var, width=42,
+                           style="Search.TEntry")
+        search.pack()
+        search.bind("<KeyRelease>", lambda _e: self._apply_filter())
+
+        right_group = ttk.Frame(header)
+        right_group.grid(row=0, column=2, sticky="e")
+        ttk.Button(right_group, text="Rescan library", command=self._rescan).pack(anchor="e", pady=(0, 16))
+        sort_row = ttk.Frame(right_group)
+        sort_row.pack(anchor="e")
+        self.sort_combo = ttk.Combobox(
+            sort_row, textvariable=self.sort_var, state="readonly", width=15,
+            values=("Title (A-Z)", "Title (Z-A)", "Year (newest)", "Year (oldest)",
+                    "Most watched", "Least watched"),
+        )
+        self.sort_combo.pack(side="right")
+        ttk.Label(sort_row, text="Sort by", foreground=MUTED_FG).pack(side="right", padx=(0, 8))
+        header.grid_columnconfigure(0, weight=1)
+        header.grid_columnconfigure(1, weight=1)
+        header.grid_columnconfigure(2, weight=1)
+        for combo in (self.genre_combo, self.studio_combo, self.presentation_combo, self.sort_combo):
+            combo.bind("<<ComboboxSelected>>", lambda _e: self._apply_filter())
+        self._refresh_filter_choices()
+
+        summary = ttk.Frame(self.browser_view, padding=(26, 0, 26, 2))
+        summary.pack(fill="x")
+        self.status = ttk.Label(summary, anchor="w", style="Status.TLabel")
+        self.status.pack(side="left")
+        self.page_label = ttk.Label(summary, style="Status.TLabel")
+        self.page_label.pack(side="right")
+
+        self.grid = ttk.Frame(self.browser_view, padding=(20, 5, 20, 5))
+        self.grid.pack(fill="both", expand=True)
+        self.slots: list[tuple[tk.Label, ttk.Label, ttk.Label]] = []
+        for row in range(self.rows):
+            for column in range(self.cols):
+                card = ttk.Frame(self.grid, padding=7, style="Tile.TFrame", cursor="hand2")
+                card.grid(row=row, column=column, padx=7, pady=7, sticky="nsew")
+                poster = tk.Label(card, image=self.placeholder, cursor="hand2", bd=0, bg=TILE_BG,
+                                  highlightthickness=0)
+                poster.grid(row=0, column=0, sticky="nsew")
+                title = ttk.Label(card, wraplength=self.thumb_size[0], justify="center",
+                                  cursor="hand2", style="Title.TLabel")
+                title.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+                meta = ttk.Label(card, anchor="center", cursor="hand2", style="Meta.TLabel")
+                meta.grid(row=2, column=0, sticky="ew", pady=(3, 2))
+                card.grid_columnconfigure(0, weight=1)
+                card.grid_rowconfigure(0, weight=1)
+                self.slots.append((poster, title, meta))
+
+                def enter(_e, c=card, p=poster, t=title, m=meta):
+                    c.configure(style="TileHover.TFrame")
+                    t.configure(style="TitleHover.TLabel")
+                    m.configure(style="MetaHover.TLabel")
+                    self._apply_hover(c, p, True)
+
+                def leave(_e, c=card, p=poster, t=title, m=meta):
+                    c.configure(style="Tile.TFrame")
+                    t.configure(style="Title.TLabel")
+                    m.configure(style="Meta.TLabel")
+                    self._apply_hover(c, p, False)
+
+                for widget in (card, poster, title, meta):
+                    widget.bind("<Enter>", enter)
+                    widget.bind("<Leave>", leave)
+        for column in range(self.cols):
+            self.grid.grid_columnconfigure(column, weight=1, uniform="gridcol")
+        for row in range(self.rows):
+            self.grid.grid_rowconfigure(row, weight=1, uniform="gridrow")
+
+        nav = ttk.Frame(self.browser_view, padding=(26, 7, 26, 18))
+        nav.pack(fill="x")
+        self.prev_btn = ttk.Button(nav, text="Previous", command=self._prev_page)
+        self.prev_btn.pack(side="left")
+        self.next_btn = ttk.Button(nav, text="Next", command=self._next_page)
+        self.next_btn.pack(side="right")
+
+        self.detail_view = ttk.Frame(self)
+        self._build_detail_view()
+
+    def _build_detail_view(self):
+        top = ttk.Frame(self.detail_view, padding=(26, 20, 26, 12))
+        top.pack(fill="x")
+        ttk.Button(top, text="Back to library", command=self._show_browser).pack(side="left")
+        ttk.Label(top, text="FRAME", font=("Segoe UI Semibold", 15)).pack(side="right")
+        body = ttk.Frame(self.detail_view, padding=(42, 22, 42, 38))
+        body.pack(fill="both", expand=True)
+        self.detail_poster = tk.Label(body, bg=PANEL_BG, bd=0, highlightthickness=1,
+                                      highlightbackground=SUBTLE_BORDER)
+        self.detail_poster.grid(row=0, column=0, rowspan=2, sticky="n", padx=(0, 46))
+        info = ttk.Frame(body)
+        info.grid(row=0, column=1, sticky="nsew")
+        self.detail_eyebrow = ttk.Label(info, style="Eyebrow.TLabel")
+        self.detail_eyebrow.pack(anchor="w", pady=(8, 8))
+        self.detail_title = ttk.Label(info, style="HeroTitle.TLabel", wraplength=680)
+        self.detail_title.pack(anchor="w")
+        self.detail_facts = ttk.Label(info, style="Body.TLabel", wraplength=680)
+        self.detail_facts.pack(anchor="w", pady=(15, 8))
+        self.detail_genres = ttk.Label(info, style="Body.TLabel", wraplength=680)
+        self.detail_genres.pack(anchor="w", pady=(0, 22))
+        self.detail_play = ttk.Button(info, text="Play movie", style="Accent.TButton")
+        self.detail_play.pack(anchor="w", pady=(0, 16))
+        actions = ttk.Frame(info)
+        actions.pack(anchor="w")
+        self.detail_edit = ttk.Button(actions, text="Edit metadata")
+        self.detail_edit.pack(side="left", padx=(0, 8))
+        self.detail_folder = ttk.Button(actions, text="Open folder")
+        self.detail_folder.pack(side="left")
+        ttk.Label(info, text="Tip: press Esc anytime to return to your library.",
+                  style="Status.TLabel").pack(anchor="w", pady=(28, 0))
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
 
     def _apply_filter(self):
         q = self.search_var.get().strip().lower()
@@ -718,6 +895,43 @@ class MovieBrowser(tk.Tk):
         except Exception as e:
             messagebox.showerror("Could not open folder", str(e))
 
+    def _show_details(self, item: MovieItem):
+        self.browser_view.pack_forget()
+        self.detail_view.pack(fill="both", expand=True)
+        self.detail_title.configure(text=item.title)
+        self.detail_eyebrow.configure(text="NOW IN YOUR LIBRARY")
+        facts = [str(item.year) if item.year else "Year unknown"]
+        if item.presentation:
+            facts.append(item.presentation)
+        if item.studio:
+            facts.append(item.studio)
+        facts.append(f"Watched {item.watch_count} time{'s' if item.watch_count != 1 else ''}")
+        self.detail_facts.configure(text="  •  ".join(facts))
+        self.detail_genres.configure(
+            text="  /  ".join(item.genres) if item.genres else "No genres added yet"
+        )
+        self.detail_play.configure(
+            command=lambda it=item: self._play(it),
+            state=("normal" if item.video_path and os.path.isfile(item.video_path) else "disabled"),
+        )
+        self.detail_edit.configure(command=lambda it=item: self._edit_metadata(it))
+        self.detail_folder.configure(command=lambda it=item: self._open_folder(it))
+        source = item.cover_path if item.cover_path and os.path.isfile(item.cover_path) else item.thumb_path
+        try:
+            if not source:
+                raise OSError("No poster")
+            image = Image.open(source).convert("RGB")
+            image.thumbnail((360, 520))
+            self.detail_image = ImageTk.PhotoImage(image)
+        except Exception:
+            self.detail_image = ImageTk.PhotoImage(Image.new("RGB", (340, 500), (21, 25, 34)))
+        self.detail_poster.configure(image=self.detail_image)
+        self.detail_poster.image = self.detail_image
+
+    def _show_browser(self):
+        self.detail_view.pack_forget()
+        self.browser_view.pack(fill="both", expand=True)
+
     def _apply_hover(self, card: ttk.Frame, poster: tk.Label, on: bool):
         # Card background via style swap
         card_style = "TileHover.TFrame" if on else "Tile.TFrame"
@@ -727,7 +941,7 @@ class MovieBrowser(tk.Tk):
         if on:
             poster.configure(highlightthickness=2, highlightbackground=HOVER_BORDER, highlightcolor=HOVER_BORDER)
         else:
-            poster.configure(highlightthickness=1, highlightbackground=SUBTLE_BORDER, highlightcolor=SUBTLE_BORDER)
+            poster.configure(highlightthickness=0, highlightbackground=SUBTLE_BORDER, highlightcolor=SUBTLE_BORDER)
 
     def _load_thumb(self, item: MovieItem) -> ImageTk.PhotoImage:
         # Prefer thumb.jpg, then cover.*
@@ -772,25 +986,28 @@ class MovieBrowser(tk.Tk):
         self.next_btn.config(state=("disabled" if self.page >= maxp else "normal"))
 
         # Fill slots quickly with placeholder, then lazy-load images
-        for i, (poster, title) in enumerate(self.slots):
+        for i, (poster, title, meta) in enumerate(self.slots):
             if i < len(page_items):
                 item = page_items[i]
                 poster.config(image=self.placeholder)
                 poster.image = self.placeholder
                 title.config(text=item.title)
+                details = [str(item.year) if item.year else "Unknown year"]
+                if item.presentation:
+                    details.append(item.presentation)
+                meta.config(text="  •  ".join(details))
 
-                poster.bind("<Button-1>", lambda e, it=item: self._play(it))
-                title.bind("<Button-1>", lambda e, it=item: self._play(it))
-                poster.bind("<Button-3>", lambda e, it=item: self._edit_metadata(it))
-                title.bind("<Button-3>", lambda e, it=item: self._edit_metadata(it))
+                for widget in (poster, title, meta):
+                    widget.bind("<Button-1>", lambda e, it=item: self._show_details(it))
+                    widget.bind("<Button-3>", lambda e, it=item: self._edit_metadata(it))
             else:
                 poster.config(image=self.placeholder)
                 poster.image = self.placeholder
                 title.config(text="")
-                poster.unbind("<Button-1>")
-                title.unbind("<Button-1>")
-                poster.unbind("<Button-3>")
-                title.unbind("<Button-3>")
+                meta.config(text="")
+                for widget in (poster, title, meta):
+                    widget.unbind("<Button-1>")
+                    widget.unbind("<Button-3>")
 
         self._lazy_load(page_items, 0)
 
@@ -800,7 +1017,7 @@ class MovieBrowser(tk.Tk):
             return
 
         item = items[i]
-        poster, _title = self.slots[i]
+        poster, _title, _meta = self.slots[i]
 
         img = self._load_thumb(item)
         poster.config(image=img)
