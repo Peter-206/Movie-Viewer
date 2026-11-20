@@ -1,9 +1,20 @@
+"""Browse movies stored in separate folders.
+
+Put this script beside your movie folders, or pass --root with their parent folder.
+On startup and Rescan, the main video in each movie folder is renamed to movie
+with its original extension. The movie title still comes from the folder name.
+If there are several videos, an existing movie file is preferred; otherwise the
+largest video is used. Other videos keep their names. Existing files are never
+replaced. Nested videos stay in their original subfolder.
+"""
+
 import os
 import argparse
 import difflib
 import json
 import re
 import sqlite3
+import sys
 import tkinter as tk
 import urllib.error
 import urllib.parse
@@ -14,19 +25,31 @@ from typing import Optional, List
 
 from PIL import Image, ImageTk
 
+from movie_shelf_ui import MovieShelfPresentation
+
 MOVIE_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".wmv", ".webm"}
 IMG_EXTS = {".jpg", ".jpeg", ".png"}
 
-NAVY_BG = "#090b10"
-PANEL_BG = "#11141b"
-TILE_BG = "#151922"
-HOVER_BG = "#1c2230"
-TEXT_FG = "#f6f7fb"
-MUTED_FG = "#9299a8"
-ACCENT = "#f04455"
-ACCENT_HOVER = "#ff5c6b"
-SUBTLE_BORDER = "#262c38"
-HOVER_BORDER = "#f04455"
+# Input: The projection booth palette. Output: Main indigo background. Goal: Reduce glare around posters. Description: Colors the root surface.
+NAVY_BG = "#171d2b"
+# Input: The projection booth palette. Output: Panel background. Goal: Maintain consistent surfaces. Description: Matches the root.
+PANEL_BG = "#171d2b"
+# Input: The projection booth palette. Output: Lifted slate background. Goal: Group movie content. Description: Colors cards and input fields.
+TILE_BG = "#222c3e"
+# Input: The projection booth palette. Output: Hover background. Goal: Show interactive state. Description: Lifts the slate tone.
+HOVER_BG = "#303e53"
+# Input: The projection booth palette. Output: Primary ivory text. Goal: Keep titles readable. Description: Main foreground color.
+TEXT_FG = "#f3f0e8"
+# Input: The projection booth palette. Output: Secondary cool text. Goal: Separate supporting information. Description: Muted readable foreground.
+MUTED_FG = "#b9c6d7"
+# Input: The projection booth palette. Output: Brass action color. Goal: Identify primary actions. Description: Main accent surface.
+ACCENT = "#e4bb70"
+# Input: The projection booth palette. Output: Active brass color. Goal: Show action hover. Description: Lightens primary buttons.
+ACCENT_HOVER = "#f0ce90"
+# Input: The projection booth palette. Output: Slate border color. Goal: Delineate controls. Description: Quiet structural boundary.
+SUBTLE_BORDER = "#52627a"
+# Input: The projection booth palette. Output: Teal focus color. Goal: Highlight selection. Description: Signals an interactive poster.
+HOVER_BORDER = "#86c9be"
 
 
 THUMB_NAME = "thumb.jpg"
@@ -35,6 +58,14 @@ HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MovieShelf/1.0",
     "Accept": "application/json,image/avif,image/webp,image/jpeg,*/*",
 }
+
+
+def normalize_path(path: Optional[str]) -> Optional[str]:
+    """Collapse repeated separators and dot segments in a filesystem path."""
+    if not path:
+        return path
+    # Windows keeps the leading pair of slashes needed for network shares.
+    return os.path.normpath(os.path.expanduser(path))
 
 
 @dataclass(frozen=True)
@@ -92,10 +123,140 @@ class MovieCatalog:
             )
         self.connection.commit()
 
+    # Input: Movie folders found under the active library root.
+    # Output: Updated paths and metadata associations in the catalog.
+    # Goal: Keep edited metadata attached when the drive letter changes.
+    # Description: Reuses an unambiguous historical row for each folder.
     def sync(self, scanned: List[MovieItem]) -> None:
+        # Input: Existing movie rows and their genre names.
+        # Output: A snapshot used to compare historical metadata.
+        # Goal: Detect matching folders without relying on absolute paths.
+        # Description: Reads the catalog before any path updates.
+        stored_rows = self.connection.execute(
+            """
+            SELECT m.id, m.folder_path, m.title, m.year, m.studio,
+                   m.presentation, m.watch_count,
+                   COALESCE(group_concat(g.name, '|'), '')
+            FROM movies m
+            LEFT JOIN movie_genres mg ON mg.movie_id = m.id
+            LEFT JOIN genres g ON g.id = mg.genre_id
+            GROUP BY m.id
+            """
+        ).fetchall()
         with self.connection:
+            # Input: Scanned movie folders.
+            # Output: One movie to synchronize per iteration.
+            # Goal: Relate the current folder to its catalog metadata.
+            # Description: Processes each folder independently.
             for item in scanned:
+                # Input: The scanned folder name.
+                # Output: A display title and optional release year.
+                # Goal: Establish the default metadata for comparison.
+                # Description: Removes release tags from the folder name.
                 clean_title, detected_year = movie_name_and_year(item.title)
+                # Input: The scanned folder path.
+                # Output: A normalized folder path.
+                # Goal: Use a consistent active location.
+                # Description: Normalizes separators and dot segments.
+                folder = normalize_path(item.folder)
+                # Input: The scanned video path.
+                # Output: A normalized video path or None.
+                # Goal: Keep playback pointing at the active drive.
+                # Description: Normalizes the selected video's location.
+                video = normalize_path(item.video_path)
+                # Input: The scanned cover path.
+                # Output: A normalized cover path or None.
+                # Goal: Keep artwork pointing at the active drive.
+                # Description: Normalizes the cover location.
+                cover = normalize_path(item.cover_path)
+                # Input: The scanned thumbnail path.
+                # Output: A normalized thumbnail path or None.
+                # Goal: Keep artwork pointing at the active drive.
+                # Description: Normalizes the thumbnail location.
+                thumb = normalize_path(item.thumb_path)
+                # Input: The scanned folder path.
+                # Output: A case-insensitive folder name.
+                # Goal: Find historical entries after a drive move.
+                # Description: Uses the folder name as a portable identity.
+                folder_name = os.path.basename(folder).casefold()
+                # Input: Historical rows and the active folder name.
+                # Output: Rows with the same movie folder name.
+                # Goal: Find possible metadata sources.
+                # Description: Includes old absolute paths and drive-relative paths.
+                matching_rows = [
+                    stored_movie for stored_movie in stored_rows
+                    if os.path.basename(os.path.normpath(stored_movie[1])).casefold() == folder_name
+                ]
+                # Input: Matching historical rows and the active path.
+                # Output: The existing active row or None.
+                # Goal: Preserve metadata already saved at this location.
+                # Description: Compares normalized paths without case differences.
+                current_row = next(
+                    (stored_movie for stored_movie in matching_rows
+                     if os.path.normcase(normalize_path(stored_movie[1])) == os.path.normcase(folder)),
+                    None,
+                )
+                # Input: Defaults parsed from the current folder.
+                # Output: The metadata tuple for an untouched entry.
+                # Goal: Distinguish edited records from scanned defaults.
+                # Description: Matches the selected fields from stored rows.
+                default_metadata = (clean_title, detected_year, "", "", 0, "")
+                # Input: Historical rows for this folder.
+                # Output: Unique edited metadata tuples, excluding watch counts.
+                # Goal: Avoid choosing between conflicting old edits.
+                # Description: Watch counts may grow on different drive letters.
+                edited_metadata = {
+                    stored_movie[2:6] + (stored_movie[7],) for stored_movie in matching_rows
+                    if stored_movie[2:6] + (stored_movie[7],)
+                    != default_metadata[:4] + (default_metadata[5],)
+                }
+                # Input: Watch counts on historical copies of this movie.
+                # Output: The largest recorded count.
+                # Goal: Preserve recorded plays without double counting copies.
+                # Description: A copied catalog may gain plays at another path.
+                watch_count = max((stored_movie[6] for stored_movie in matching_rows), default=0)
+                # Input: Historical rows and their edited metadata.
+                # Output: One safe source row or None.
+                # Goal: Reattach metadata only when its identity is clear.
+                # Description: Prefers the oldest matching edited row when edits agree.
+                source_row = None
+                if len(edited_metadata) == 1:
+                    source_row = min(
+                        (stored_movie for stored_movie in matching_rows
+                         if stored_movie[2:6] + (stored_movie[7],) in edited_metadata),
+                        key=lambda stored_movie: stored_movie[0],
+                    )
+                elif not edited_metadata and matching_rows:
+                    source_row = min(matching_rows, key=lambda stored_movie: stored_movie[0])
+
+                if current_row is None and source_row is not None:
+                    self.connection.execute(
+                        """UPDATE movies SET folder_path=?, video_path=?, cover_path=?,
+                                  thumb_path=?, watch_count=? WHERE id=?""",
+                        (folder, video, cover, thumb, watch_count, source_row[0]),
+                    )
+                    continue
+
+                if (current_row is not None
+                        and current_row[2:6] + (current_row[7],)
+                        == default_metadata[:4] + (default_metadata[5],)
+                        and source_row is not None and source_row[0] != current_row[0]
+                        and edited_metadata):
+                    self.connection.execute(
+                        """UPDATE movies SET title=?, year=?, studio=?, presentation=?,
+                                  watch_count=? WHERE id=?""",
+                        (*source_row[2:6], watch_count, current_row[0]),
+                    )
+                    self.connection.execute(
+                        """INSERT OR IGNORE INTO movie_genres(movie_id, genre_id)
+                           SELECT ?, genre_id FROM movie_genres WHERE movie_id=?""",
+                        (current_row[0], source_row[0]),
+                    )
+                elif current_row is not None and current_row[6] < watch_count:
+                    self.connection.execute(
+                        "UPDATE movies SET watch_count=? WHERE id=?",
+                        (watch_count, current_row[0]),
+                    )
                 self.connection.execute(
                     """
                     INSERT INTO movies
@@ -106,11 +267,10 @@ class MovieCatalog:
                         cover_path=excluded.cover_path,
                         thumb_path=excluded.thumb_path
                     """,
-                    (clean_title, item.folder, item.video_path, item.cover_path,
-                     item.thumb_path, detected_year),
+                    (clean_title, folder, video, cover, thumb, detected_year),
                 )
 
-    def load(self) -> List[MovieItem]:
+    def load(self, root_dir: Optional[str] = None) -> List[MovieItem]:
         rows = self.connection.execute(
             """
             SELECT m.id, m.title, m.folder_path, m.video_path, m.cover_path,
@@ -122,14 +282,31 @@ class MovieCatalog:
             GROUP BY m.id
             """
         ).fetchall()
+        root = os.path.normcase(os.path.abspath(normalize_path(root_dir))) if root_dir else None
+
+        def belongs_to_root(folder: str) -> bool:
+            if not os.path.isdir(folder):
+                return False
+            if root is None:
+                return True
+            try:
+                return os.path.commonpath(
+                    (root, os.path.normcase(os.path.abspath(folder)))
+                ) == root
+            except (OSError, ValueError):
+                # Different Windows drives cannot be compared with commonpath.
+                return False
+
         return [
             MovieItem(
-                id=row[0], title=row[1], folder=row[2], video_path=row[3],
-                cover_path=row[4], thumb_path=row[5], year=row[6], studio=row[7],
+                id=row[0], title=row[1], folder=normalize_path(row[2]),
+                video_path=normalize_path(row[3]), cover_path=normalize_path(row[4]),
+                thumb_path=normalize_path(row[5]), year=row[6], studio=row[7],
                 presentation=row[8], genres=tuple(filter(None, row[9].split("|"))),
                 watch_count=row[10],
             )
-            for row in rows if os.path.isdir(row[2])
+            for row in rows
+            if belongs_to_root(normalize_path(row[2]))
         ]
 
     def save_metadata(self, movie_id: int, title: str, year: Optional[int],
@@ -154,6 +331,12 @@ class MovieCatalog:
         with self.connection:
             self.connection.execute(
                 "UPDATE movies SET watch_count = watch_count + 1 WHERE id=?", (movie_id,)
+            )
+
+    def update_video_path(self, movie_id: int, video_path: str) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE movies SET video_path=? WHERE id=?", (video_path, movie_id)
             )
 
     def choices(self, column: str) -> List[str]:
@@ -191,26 +374,55 @@ def find_cover(folder: str) -> Optional[str]:
 
 
 def find_video(folder: str) -> Optional[str]:
-    # Pick the largest video file in the folder (usually the actual movie)
-    best = None
-    best_size = -1
+    """Find the main video inside this movie's folder only."""
+    candidates = []
+    folder = os.path.abspath(normalize_path(folder))
+    for current, dirs, files in os.walk(folder):
+        # Do not follow links into a different movie or another disk.
+        dirs[:] = sorted(name for name in dirs
+                         if not name.startswith((".", "__"))
+                         and not os.path.islink(os.path.join(current, name)))
+        for name in sorted(files):
+            stem, extension = os.path.splitext(name)
+            if extension.lower() not in MOVIE_EXTS:
+                continue
+            path = os.path.normpath(os.path.join(current, name))
+            if os.path.islink(path):
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            # A movie file takes priority over trailers and other bonus videos.
+            named_movie = stem.casefold() == "movie"
+            priority = 2 if named_movie and current == folder else int(named_movie)
+            candidates.append((priority, size, path))
+    return max(candidates)[2] if candidates else None
 
-    try:
-        for fn in os.listdir(folder):
-            ext = os.path.splitext(fn)[1].lower()
-            if ext in MOVIE_EXTS:
-                p = os.path.join(folder, fn)
-                try:
-                    size = os.path.getsize(p)
-                except OSError:
-                    continue
-                if size > best_size:
-                    best_size = size
-                    best = p
-    except OSError:
+
+def rename_main_video(folder: str) -> Optional[str]:
+    """Rename the main video to movie.ext and return its actual path."""
+    source = find_video(folder)
+    if source is None:
         return None
 
-    return best
+    # Keep the exact original extension, including its letter case.
+    extension = os.path.splitext(source)[1]
+    destination = os.path.join(os.path.dirname(source), "movie" + extension)
+    if source == destination:
+        return source
+
+    if os.path.lexists(destination):
+        # On Windows, Movie.mp4 and movie.mp4 can refer to the same file.
+        # Rename that file too so its displayed name matches the convention.
+        if os.path.samefile(source, destination):
+            os.rename(source, destination)
+            return destination
+        raise FileExistsError(f"Cannot rename {source}: {destination} already exists.")
+
+    os.rename(source, destination)
+    print(f"Renamed: {source} -> {destination}")
+    return destination
 
 
 def ensure_thumb(folder: str, cover_path: Optional[str], thumb_size: tuple[int, int]) -> Optional[str]:
@@ -234,6 +446,7 @@ def ensure_thumb(folder: str, cover_path: Optional[str], thumb_size: tuple[int, 
 
 
 def scan_movies(root_dir: str, thumb_size: tuple[int, int], build_thumbs: bool = False) -> List[MovieItem]:
+    root_dir = os.path.abspath(normalize_path(root_dir))
     if not os.path.isdir(root_dir):
         raise FileNotFoundError(f"Not a directory: {root_dir}")
 
@@ -242,8 +455,12 @@ def scan_movies(root_dir: str, thumb_size: tuple[int, int], build_thumbs: bool =
         if name.startswith((".", "__")):
             continue
         folder = os.path.join(root_dir, name)
-        if not os.path.isdir(folder):
+        if not os.path.isdir(folder) or os.path.islink(folder):
             continue
+
+        # Renaming happens before saving the paths in movies.db.
+        # Running another scan is safe: movie.ext already has the right name.
+        video_path = rename_main_video(folder)
 
         cover = find_cover(folder)
         thumb = os.path.join(folder, THUMB_NAME)
@@ -257,7 +474,7 @@ def scan_movies(root_dir: str, thumb_size: tuple[int, int], build_thumbs: bool =
                 id=0,
                 title=name,
                 folder=folder,
-                video_path=find_video(folder),
+                video_path=video_path,
                 cover_path=cover,
                 thumb_path=thumb_path,
             )
@@ -290,17 +507,26 @@ def build_thumbnails(root_dir: str, thumb_size: tuple[int, int]) -> int:
     return count
 
 
+# Input: A movie folder or saved title.
+# Output: A readable title and an optional release year.
+# Goal: Remove release tags while retaining numbers in movie titles.
+# Description: Uses a trailing year as metadata only when a title precedes it.
+# Parameter folder_name. Input: Text. Output: Source title. Goal: Parse movie names. Description: The original folder or title.
 def movie_name_and_year(folder_name: str) -> tuple[str, Optional[int]]:
     """Turn common release-folder names into an IMDb search title and optional year."""
-    name = re.sub(r"[._]+", " ", folder_name).strip()
-    years = re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", name)
-    year = int(years[-1]) if years else None
-    if year:
-        name = name[:name.rfind(str(year))]
+    # Input: Original text. Output: Title text. Goal: Remove release prefixes. Description: Strips a leading distributor URL and release separators.
+    name = re.sub(r"^www\.[^\s]+\s*-\s*", "", folder_name, flags=re.I)
+    name = re.sub(r"[._]+", " ", name).strip()
+    # Input: Normalized text. Output: Trailing year match. Goal: Preserve titles like 1917 and 2001. Description: Requires nonempty title text before a release year.
+    release_year = next(reversed(list(re.finditer(r"(?<=\S)\s+\(?((?:19|20)\d{2})\)?(?=\s|$|\[)", name))), None)
+    # Input: Year match. Output: Optional integer year. Goal: Store release metadata separately. Description: Title numbers alone are not release years.
+    year = int(release_year.group(1)) if release_year else None
+    if release_year:
+        name = name[:release_year.start()]
 
     # Remove common release metadata when there is no year to act as a boundary.
     name = re.split(
-        r"\b(?:2160p|1080p|720p|480p|bluray|blu-ray|brrip|webrip|web-dl|dvdrip|x26[45]|hevc)\b",
+        r"\b(?:2160p|1080p|720p|480p|bluray|blu-ray|brrip|webrip|web-dl|dvdrip|x26[45]|hevc)\b|\[[^\]]*\]",
         name,
         maxsplit=1,
         flags=re.IGNORECASE,
@@ -399,7 +625,7 @@ def fetch_missing_covers(root_dir: str, timeout: int = 20) -> tuple[int, int, in
     return downloaded, skipped, failed
 
 
-class MovieBrowser(tk.Tk):
+class MovieShelfController(tk.Tk):
     def __init__(
         self,
         root_dir: str,
@@ -428,49 +654,76 @@ class MovieBrowser(tk.Tk):
         style.configure("Title.TLabel", background=TILE_BG, foreground=TEXT_FG, font=("Segoe UI Semibold", 12))
         style.configure("TitleHover.TLabel", background=HOVER_BG, foreground=TEXT_FG, font=("Segoe UI Semibold", 12))
         style.configure("Meta.TLabel", background=TILE_BG, foreground=MUTED_FG, font=("Segoe UI", 9))
-        style.configure("MetaHover.TLabel", background=HOVER_BG, foreground="#b8bfcc", font=("Segoe UI", 9))
+        style.configure("MetaHover.TLabel", background=HOVER_BG, foreground=TEXT_FG, font=("Segoe UI", 9))
         style.configure("HeroTitle.TLabel", foreground=TEXT_FG, font=("Segoe UI Semibold", 34))
         style.configure("Eyebrow.TLabel", foreground=ACCENT, font=("Segoe UI Semibold", 10))
-        style.configure("Body.TLabel", foreground="#c4c8d2", font=("Segoe UI", 12))
-        style.configure("TButton", background="#202631", foreground=TEXT_FG, borderwidth=0,
+        style.configure("Body.TLabel", foreground=TEXT_FG, font=("Segoe UI", 12))
+        style.configure("FeatureTitle.TLabel", background=TILE_BG, foreground=TEXT_FG,
+                        font=("Segoe UI Semibold", 34))
+        style.configure("FeatureEyebrow.TLabel", background=TILE_BG, foreground=SUBTLE_BORDER,
+                        font=("Segoe UI Semibold", 10))
+        style.configure("FeatureBody.TLabel", background=TILE_BG, foreground=TEXT_FG,
+                        font=("Segoe UI", 12))
+        style.configure("RowNav.TButton", background=TILE_BG, foreground=TEXT_FG,
+                        borderwidth=0, font=("Segoe UI Semibold", 10), padding=(9, 5))
+        style.map("RowNav.TButton", background=[("active", HOVER_BG), ("disabled", TILE_BG)],
+                  foreground=[("disabled", MUTED_FG)])
+        style.configure("TButton", background=SUBTLE_BORDER, foreground=NAVY_BG, borderwidth=0,
                         font=("Segoe UI Semibold", 10), padding=(14, 9))
-        style.map("TButton", background=[("active", "#2a3240")])
-        style.configure("Accent.TButton", background=ACCENT, foreground="white", padding=(20, 11))
-        style.map("Accent.TButton", background=[("active", ACCENT_HOVER), ("disabled", "#57272d")])
-        style.configure("TEntry", fieldbackground="#171b24", foreground=TEXT_FG, insertcolor=TEXT_FG,
+        style.map("TButton", background=[("active", TEXT_FG), ("disabled", TILE_BG)])
+        style.configure("Accent.TButton", background=ACCENT, foreground=TEXT_FG, padding=(20, 11))
+        style.map("Accent.TButton", background=[("active", ACCENT_HOVER), ("disabled", TILE_BG)])
+        style.configure("TEntry", fieldbackground=TILE_BG, foreground=TEXT_FG, insertcolor=TEXT_FG,
                         bordercolor=SUBTLE_BORDER, padding=8)
-        style.configure("Search.TEntry", fieldbackground="#171b24", foreground=TEXT_FG,
+        style.configure("Search.TEntry", fieldbackground=TILE_BG, foreground=TEXT_FG,
                         insertcolor=TEXT_FG, bordercolor=SUBTLE_BORDER,
                         font=("Segoe UI", 16), padding=(14, 12))
-        style.configure("TCombobox", fieldbackground="#171b24", background="#171b24",
+        style.configure("TCombobox", fieldbackground=TILE_BG, background=TILE_BG,
                         foreground=TEXT_FG, arrowcolor=MUTED_FG, bordercolor=SUBTLE_BORDER, padding=6)
         style.map(
             "TCombobox",
-            fieldbackground=[("readonly", "#171b24")],
-            background=[("readonly", "#171b24"), ("active", "#252c39")],
+            fieldbackground=[("readonly", TILE_BG)],
+            background=[("readonly", TILE_BG), ("active", HOVER_BG)],
             foreground=[("readonly", TEXT_FG)],
-            arrowcolor=[("readonly", "#c4c8d2")],
+            arrowcolor=[("readonly", TEXT_FG)],
         )
         # The popup is a native Tk listbox. Only set its basic colors; selection
         # and focus remain under Tk's control so mouse and keyboard input work.
-        self.option_add("*TCombobox*Listbox.background", "#171b24")
+        self.option_add("*TCombobox*Listbox.background", TILE_BG)
         self.option_add("*TCombobox*Listbox.foreground", TEXT_FG)
-        self.option_add("*TCombobox*Listbox.selectBackground", "#3b4558")
+        self.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
         self.option_add("*TCombobox*Listbox.selectForeground", TEXT_FG)
 
         self.title("Movie Library")
         self.minsize(980, 680)
 
-        self.root_dir = root_dir
-        self.cols = cols
-        self.rows = rows
-        self.page_size = cols * rows
-        self.thumb_size = (thumb_w, thumb_h)
+        self.root_dir = os.path.abspath(normalize_path(root_dir))
+        # Input: Screen dimensions and requested grid size.
+        # Output: A column count that fits the display.
+        # Goal: Keep library pages inside the visible window.
+        # Description: Reserves room for card spacing and the window border.
+        self.cols = min(cols, max(2, (self.winfo_screenwidth() - 100) // 170))
+        # Input: Requested row count and available screen height.
+        # Output: A row count that fits the display.
+        # Goal: Avoid a clipped second or third row.
+        # Description: Uses the usable height after navigation and filters.
+        self.rows = min(rows, max(1, (self.winfo_screenheight() - 330) // 260))
+        # Input: Visible rows and columns.
+        # Output: The number of titles per library page.
+        # Goal: Keep paging consistent with the rendered grid.
+        # Description: Uses the screen-sized grid capacity.
+        self.page_size = self.cols * self.rows
+        # Input: Requested art size and available card space.
+        # Output: Thumbnail dimensions in pixels.
+        # Goal: Fit posters without clipping page controls.
+        # Description: Caps art to the grid's screen-sized cells.
+        self.thumb_size = (min(thumb_w, max(110, (self.winfo_screenwidth() - 120) // self.cols - 24)),
+                           min(thumb_h, max(150, (self.winfo_screenheight() - 330) // self.rows - 58)))
 
-        self.catalog = MovieCatalog(os.path.join(root_dir, "movies.db"))
-        scanned = scan_movies(root_dir, self.thumb_size, build_thumbs=build_thumbs_on_scan)
+        self.catalog = MovieCatalog(os.path.join(self.root_dir, "movies.db"))
+        scanned = scan_movies(self.root_dir, self.thumb_size, build_thumbs=build_thumbs_on_scan)
         self.catalog.sync(scanned)
-        self.all_items = self.catalog.load()
+        self.all_items = self.catalog.load(self.root_dir)
         self.filtered = list(self.all_items)
 
         self.page = 0
@@ -478,138 +731,136 @@ class MovieBrowser(tk.Tk):
         self.detail_image: Optional[ImageTk.PhotoImage] = None
         self.loading_job: Optional[str] = None
 
-        self.placeholder = ImageTk.PhotoImage(Image.new("RGB", self.thumb_size, (30, 30, 30)))
+        self.placeholder = ImageTk.PhotoImage(Image.new("RGB", self.thumb_size, TILE_BG))
 
         self._build_modern_ui()
+        self._build_home_ui()
         self._render_page()
+        self._show_home()
         self.protocol("WM_DELETE_WINDOW", self._close)
 
-        # Keyboard paging
-        self.bind("<Left>", lambda _e: self._prev_page() if self.browser_view.winfo_ismapped() else None)
-        self.bind("<Right>", lambda _e: self._next_page() if self.browser_view.winfo_ismapped() else None)
-        self.bind("<Escape>", lambda _e: self._show_browser() if self.detail_view.winfo_ismapped() else None)
+        self._bind_shortcuts()
 
+    # Input: The main application window.
+    # Output: Keyboard bindings on this window and its descendants.
+    # Goal: Make common navigation available without a mouse.
+    # Description: Routes keys through one dispatcher with input-field protection.
+    def _bind_shortcuts(self):
+        # Input: Supported Tk key sequences.
+        # Output: One sequence per iteration.
+        # Goal: Register consistent shortcuts.
+        # Description: Native Tab, Shift+Tab, Return, and Alt+F4 remain available.
+        for sequence in ("<F11>", "<Alt-Return>", "<Escape>", "<F1>", "<Control-f>",
+                         "<Control-l>", "<Control-r>", "<F5>", "<Alt-Left>", "<Alt-Home>",
+                         "<Control-b>", "<Left>", "<Right>", "<Up>", "<Down>",
+                         "<Prior>", "<Next>", "<Home>", "<End>", "<space>", "<Return>"):
+            self.bind(sequence, self._keyboard_action)
+
+    # Input: event supplies the pressed key, modifiers, and focused widget.
+    # Output: A navigation action or normal native key handling.
+    # Goal: Support familiar shortcuts without interfering with text editing.
+    # Description: Global actions run first. Navigation skips input fields and popups.
+    # Parameter event. Input: Tk key event. Output: Action selection. Goal: Read key. Description: Includes keysym and state.
+    def _keyboard_action(self, event):
+        if self.grab_current() is not None:
+            return
+        # Input: Tk key symbol.
+        # Output: Normalized key name.
+        # Goal: Match shortcut names consistently.
+        # Description: Lowercases letters and special key names.
+        key = event.keysym.lower()
+        if key == "f11" or (key == "return" and event.state & 0x20000):
+            self.attributes("-fullscreen", not self.attributes("-fullscreen"))
+        elif key == "escape":
+            if self.attributes("-fullscreen"):
+                self.attributes("-fullscreen", False)
+            elif self.detail_view.winfo_ismapped():
+                self._show_browser()
+            elif self.browser_view.winfo_ismapped():
+                self._show_home()
+            else:
+                self.focus_set()
+        elif key == "f1":
+            self._shortcut_help()
+        elif event.state & 0x4 and key in ("f", "l"):
+            if self.detail_view.winfo_ismapped():
+                self._open_library()
+            if self.home_view.winfo_ismapped():
+                self.home_search_entry.focus_set()
+                self.home_search_entry.selection_range(0, "end")
+            else:
+                self.library_search_entry.focus_set()
+                self.library_search_entry.selection_range(0, "end")
+        elif key == "f5" or (event.state & 0x4 and key == "r"):
+            self._rescan()
+        elif event.state & 0x4 and key == "b":
+            self._open_library()
+        elif event.state & 0x20000 and key == "home":
+            self._show_home()
+        elif event.state & 0x20000 and key == "left":
+            self._show_browser() if self.detail_view.winfo_ismapped() else self._show_home()
+        elif key == "return" and isinstance(event.widget, ttk.Button):
+            event.widget.invoke()
+        elif isinstance(event.widget, (ttk.Entry, tk.Entry, ttk.Combobox, tk.Text, ttk.Spinbox)):
+            return
+        elif self.browser_view.winfo_ismapped():
+            if key in ("left", "prior"):
+                self._prev_page()
+            elif key in ("right", "next"):
+                self._next_page()
+            elif key in ("home", "end"):
+                self.page = 0 if key == "home" else self._max_page()
+                self._render_page()
+            else:
+                return
+        elif self.home_view.winfo_ismapped():
+            if key in ("left", "right"):
+                self._rotate_feature(-1 if key == "left" else 1)
+            elif key in ("up", "down", "prior", "next"):
+                self.home_canvas.yview_scroll(-1 if key in ("up", "prior") else 1,
+                                             "pages" if key in ("prior", "next") else "units")
+            elif key in ("home", "end"):
+                self.home_canvas.yview_moveto(0 if key == "home" else 1)
+            else:
+                return
+        elif self.detail_view.winfo_ismapped() and key == "space" and not isinstance(event.widget, ttk.Button):
+            self.detail_play.invoke()
+        else:
+            return
+        return "break"
+
+    # Input: Main window.
+    # Output: A dismissible keyboard reference dialog.
+    # Goal: Make shortcuts discoverable from F1 and the visible help button.
+    # Description: Describes the view-specific keys and standard native controls.
+    def _shortcut_help(self):
+        messagebox.showinfo("Keyboard shortcuts",
+            "F11 or Alt+Enter    Toggle fullscreen\n"
+            "Esc    Exit fullscreen, go back, or leave search\n"
+            "Ctrl+F or Ctrl+L    Focus search\n"
+            "Ctrl+B    Browse the library\n"
+            "Alt+Home    Open Discover\n"
+            "Alt+Left    Go back\n"
+            "F5 or Ctrl+R    Rescan library\n\n"
+            "Library\nLeft / Right or Page Up / Page Down    Previous / next page\n"
+            "Home / End    First / last page\n\n"
+            "Discover\nUp / Down    Scroll\nPage Up / Page Down    Scroll one screen\n"
+            "Home / End    Top / bottom\nLeft / Right    Previous / next recommendation\n\n"
+            "Movie details\nSpace    Play movie\n\n"
+            "Tab / Shift+Tab    Move between controls\nEnter or Space    Activate focused button\n"
+            "Enter in search    Search library\nAlt+F4    Close window\nF1    Show this guide",
+            parent=self)
+
+    # Input: The active window and any pending thumbnail load callback.
+    # Output: A closed catalog and destroyed window.
+    # Goal: Exit without leaving a scheduled callback against a destroyed widget.
+    # Description: Cancels lazy loading before closing the database and Tk window.
     def _close(self):
+        if self.loading_job is not None:
+            self.after_cancel(self.loading_job)
+            self.loading_job = None
         self.catalog.close()
         self.destroy()
-
-    def _build_ui(self):
-        top = ttk.Frame(self, padding=10)
-        top.pack(fill="x")
-
-        ttk.Label(top, text="Folder:").pack(side="left")
-        ttk.Label(top, text=self.root_dir).pack(side="left", padx=(6, 18))
-
-        ttk.Label(top, text="Search:").pack(side="left")
-        self.search_var = tk.StringVar()
-        ent = ttk.Entry(top, textvariable=self.search_var, width=35)
-        ent.pack(side="left", padx=(6, 8))
-        ent.bind("<KeyRelease>", lambda _e: self._apply_filter())
-
-        ttk.Button(top, text="Rescan", command=self._rescan).pack(side="left", padx=6)
-
-        filters = ttk.Frame(self, padding=(10, 0, 10, 8))
-        filters.pack(fill="x")
-        self.genre_var = tk.StringVar(value="All genres")
-        self.studio_var = tk.StringVar(value="All studios")
-        self.presentation_var = tk.StringVar(value="All types")
-        self.sort_var = tk.StringVar(value="Title (A-Z)")
-
-        ttk.Label(filters, text="Genre:").pack(side="left")
-        self.genre_combo = ttk.Combobox(filters, textvariable=self.genre_var, state="readonly", width=16)
-        self.genre_combo.pack(side="left", padx=(5, 12))
-        ttk.Label(filters, text="Studio/brand:").pack(side="left")
-        self.studio_combo = ttk.Combobox(filters, textvariable=self.studio_var, state="readonly", width=16)
-        self.studio_combo.pack(side="left", padx=(5, 12))
-        ttk.Label(filters, text="Type:").pack(side="left")
-        self.presentation_combo = ttk.Combobox(
-            filters, textvariable=self.presentation_var, state="readonly", width=13
-        )
-        self.presentation_combo.pack(side="left", padx=(5, 12))
-        ttk.Label(filters, text="Sort:").pack(side="left")
-        self.sort_combo = ttk.Combobox(
-            filters, textvariable=self.sort_var, state="readonly", width=15,
-            values=(
-                "Title (A-Z)", "Title (Z-A)", "Year (newest)", "Year (oldest)",
-                "Most watched", "Least watched",
-            ),
-        )
-        self.sort_combo.pack(side="left", padx=(5, 0))
-        for combo in (self.genre_combo, self.studio_combo, self.presentation_combo, self.sort_combo):
-            combo.bind("<<ComboboxSelected>>", lambda _e: self._apply_filter())
-        self._refresh_filter_choices()
-
-        nav = ttk.Frame(self, padding=(10, 0, 10, 10))
-        nav.pack(fill="x")
-
-        self.prev_btn = ttk.Button(nav, text="◀ Prev", command=self._prev_page)
-        self.prev_btn.pack(side="left")
-
-        self.page_label = ttk.Label(nav, text="")
-        self.page_label.pack(side="left", padx=12)
-
-        self.next_btn = ttk.Button(nav, text="Next ▶", command=self._next_page)
-        self.next_btn.pack(side="left")
-
-        self.status = ttk.Label(self, text="", anchor="w", style="Status.TLabel")
-        self.status.pack(fill="x", padx=10, pady=(0, 6))
-
-        self.grid = ttk.Frame(self, padding=10)
-        self.grid.pack(fill="both", expand=True)
-
-
-        # Create fixed slots once; reuse them per page
-        self.slots: list[tuple[tk.Label, ttk.Label]] = []
-        for r in range(self.rows):
-            for c in range(self.cols):
-                card = ttk.Frame(self.grid, padding=6, style="Title.TFrame")
-                card.grid(row=r, column=c, padx=10, pady=10, sticky="nsew")
-
-                poster = tk.Label(
-                        card,
-                        image=self.placeholder,
-                        cursor="hand2",
-                        bd=0,
-                        bg=TILE_BG,
-                        activebackground=TILE_BG,
-                        highlightthickness=1,
-                        highlightbackground=SUBTLE_BORDER,
-                        highlightcolor=SUBTLE_BORDER,
-                )
-                poster.grid(row=0, column=0, sticky="nsew")
-
-                title = ttk.Label(card, text="", wraplength=self.thumb_size[0], justify="center",
-                                  cursor="hand2", style="Title.TLabel")
-                title.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-
-                card.grid_columnconfigure(0, weight=1)
-                card.grid_rowconfigure(0, weight=1)
-                card.grid_rowconfigure(1, weight=0)
-
-                self.slots.append((poster, title))
-
-                def on_enter(_e, c=card, p=poster, t=title):
-                    c.configure(style="TileHover.TFrame")
-                    t.configure(style="TitleHover.TLabel")
-                    self._apply_hover(c, p, True)
-
-                def on_leave(_e, c=card, p=poster, t=title):
-                    c.configure(style="Tile.TFrame")
-                    t.configure(style="Title.TLabel")
-                    self._apply_hover(c, p, False)
-
-                # Hover triggers if mouse enters poster OR title OR card
-                poster.bind("<Enter>", on_enter)
-                poster.bind("<Leave>", on_leave)
-                title.bind("<Enter>", on_enter)
-                title.bind("<Leave>", on_leave)
-                card.bind("<Enter>", on_enter)
-                card.bind("<Leave>", on_leave)
-
-        for c in range(self.cols):
-            self.grid.grid_columnconfigure(c, weight=1, uniform="gridcol")
-        for r in range(self.rows):
-            self.grid.grid_rowconfigure(r, weight=1, uniform="gridrow")
 
     def _build_modern_ui(self):
         self.browser_view = ttk.Frame(self)
@@ -620,8 +871,9 @@ class MovieBrowser(tk.Tk):
 
         left_group = ttk.Frame(header)
         left_group.grid(row=0, column=0, sticky="w")
-        ttk.Label(left_group, text="Alex's Movies",
-                  font=("Segoe UI Semibold", 28)).pack(anchor="w", pady=(0, 10))
+        ttk.Button(left_group, text="← Discover", command=self._show_home).pack(anchor="w")
+        ttk.Label(left_group, text="THE LIBRARY",
+                  font=("Segoe UI Semibold", 24)).pack(anchor="w", pady=(0, 10))
 
         filters = ttk.Frame(left_group)
         filters.pack(anchor="w")
@@ -629,10 +881,13 @@ class MovieBrowser(tk.Tk):
         self.studio_var = tk.StringVar(value="All studios")
         self.presentation_var = tk.StringVar(value="All types")
         self.sort_var = tk.StringVar(value="Title (A-Z)")
+        ttk.Label(filters, text="Genre", style="Status.TLabel").pack(side="left", padx=(0, 5))
         self.genre_combo = ttk.Combobox(filters, textvariable=self.genre_var, state="readonly", width=16)
-        self.genre_combo.pack(side="left", padx=(0, 10))
+        self.genre_combo.pack(side="left", padx=(0, 14))
+        ttk.Label(filters, text="Studio", style="Status.TLabel").pack(side="left", padx=(0, 5))
         self.studio_combo = ttk.Combobox(filters, textvariable=self.studio_var, state="readonly", width=16)
-        self.studio_combo.pack(side="left", padx=(0, 10))
+        self.studio_combo.pack(side="left", padx=(0, 14))
+        ttk.Label(filters, text="Type", style="Status.TLabel").pack(side="left", padx=(0, 5))
         self.presentation_combo = ttk.Combobox(filters, textvariable=self.presentation_var, state="readonly", width=13)
         self.presentation_combo.pack(side="left")
 
@@ -644,6 +899,8 @@ class MovieBrowser(tk.Tk):
         search = ttk.Entry(search_group, textvariable=self.search_var, width=42,
                            style="Search.TEntry")
         search.pack()
+        # Input: Library search widget. Output: Entry reference. Goal: Focus search by shortcut. Description: Retains the existing control.
+        self.library_search_entry = search
         search.bind("<KeyRelease>", lambda _e: self._apply_filter())
 
         right_group = ttk.Frame(header)
@@ -721,10 +978,382 @@ class MovieBrowser(tk.Tk):
         self.detail_view = ttk.Frame(self)
         self._build_detail_view()
 
+    # Input: Active movies and their recorded watch counts.
+    # Output: Five recommended movies.
+    # Goal: Feature unwatched titles related to viewing history.
+    # Description: Scores genre overlap using recorded plays and fills empty history with library titles.
+    def _featured_movies(self):
+        # Input: Watched titles in the active library.
+        # Output: A score for each watched genre.
+        # Goal: Represent the viewer's genre interests.
+        # Description: The weighted genre frequency formula sums watch counts for each genre because repeat plays indicate stronger interest.
+        genre_scores = {}
+        # Input: Active library titles.
+        # Output: One title per iteration.
+        # Goal: Build genre scores from actual watches.
+        # Description: Ignores unwatched titles while measuring preferences.
+        for movie in self.all_items:
+            if movie.watch_count:
+                # Input: Genres on the current watched title.
+                # Output: One genre per iteration.
+                # Goal: Credit each matching genre.
+                # Description: Adds this title's play count to each genre score.
+                for genre in movie.genres:
+                    genre_scores[genre] = genre_scores.get(genre, 0) + movie.watch_count
+        # Input: Active titles and watched genre scores.
+        # Output: Five ranked titles.
+        # Goal: Prioritize fresh titles that match viewing history.
+        # Description: The genre overlap score sums the watched genre frequencies on each unwatched movie.
+        recommended = sorted(self.all_items, key=lambda movie: (
+            movie.watch_count > 0,
+            -sum(genre_scores.get(genre, 0) for genre in movie.genres),
+            movie.title.casefold(),
+        ))
+        return recommended[:5]
+
+    # Input: The current catalog and window.
+    # Output: A scrollable discovery screen.
+    # Goal: Present featured, popular, and genre collections.
+    # Description: Builds a compact dashboard with direct routes to the searchable library.
+    def _build_home_ui(self):
+        self.home_view = ttk.Frame(self)
+        self.home_view.pack(fill="both", expand=True)
+        top = ttk.Frame(self.home_view, padding=(32, 18))
+        top.pack(fill="x")
+        ttk.Label(top, text="FRAME", font=("Segoe UI Semibold", 24)).pack(side="left")
+        ttk.Button(top, text="Keys · F1", command=self._shortcut_help).pack(side="right", padx=(8, 0))
+        ttk.Button(top, text="Browse all  →", command=self._open_library).pack(side="right")
+        ttk.Button(top, text="Rescan", command=self._rescan).pack(side="right", padx=10)
+        self.home_search = tk.StringVar()
+        search = ttk.Entry(top, textvariable=self.home_search, width=26, style="Search.TEntry")
+        search.pack(side="right", padx=10)
+        # Input: Home search widget. Output: Entry reference. Goal: Focus search by shortcut. Description: Retains the existing control.
+        self.home_search_entry = search
+        search.insert(0, "Search movies")
+        search.bind("<FocusIn>", lambda event: search.delete(0, "end") if search.get() == "Search movies" else None)
+        search.bind("<Return>", self._search_from_home)
+        self.home_canvas = tk.Canvas(self.home_view, bg=NAVY_BG, highlightthickness=0, yscrollincrement=24)
+        scrollbar = ttk.Scrollbar(self.home_view, orient="vertical", command=self.home_canvas.yview)
+        self.home_canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.home_canvas.pack(fill="both", expand=True)
+        self.home_content = ttk.Frame(self.home_canvas, padding=(32, 4, 32, 32))
+        self.home_window = self.home_canvas.create_window((0, 0), window=self.home_content, anchor="nw")
+        self.home_content.bind("<Configure>", lambda event: self.home_canvas.configure(scrollregion=self.home_canvas.bbox("all")))
+        self.home_canvas.bind("<Configure>", lambda event: self.home_canvas.itemconfigure(self.home_window, width=event.width))
+        self.bind("<MouseWheel>", self._scroll_home, add="+")
+        self.feature_index = 0
+        self.home_images = []
+        self._refresh_home()
+        self._schedule_feature()
+
+    # Input: event contains the wheel delta and originating widget.
+    # Output: The discovery canvas moves, or the event continues normally.
+    # Goal: Scroll when the pointer is over cards, labels, or the canvas.
+    # Description: Toplevel bindings receive descendant events. Restricts handling
+    # to canvas descendants and preserves partial touchpad deltas between events.
+    # Parameter event. Input: Tk wheel event. Output: Scroll input. Goal: Read motion. Description: Supplies widget and delta.
+    def _scroll_home(self, event):
+        if not self.home_view.winfo_ismapped():
+            return
+        if str(event.widget) != str(self.home_canvas) and not str(event.widget).startswith(str(self.home_canvas) + "."):
+            return
+        # Input: Previous wheel remainder and current Windows wheel delta.
+        # Output: Accumulated wheel motion.
+        # Goal: Support high resolution wheels without losing small events.
+        # Description: Retains deltas smaller than one native wheel step.
+        self.home_wheel_delta = getattr(self, "home_wheel_delta", 0) + event.delta
+        # Input: Accumulated wheel motion.
+        # Output: Signed count of complete wheel steps.
+        # Goal: Move in predictable 24 pixel units.
+        # Description: Native wheel step conversion divides by 120 delta units per step.
+        steps = int(self.home_wheel_delta / 120)
+        if steps:
+            self.home_canvas.yview_scroll(-steps, "units")
+            self.home_wheel_delta -= steps * 120
+        return "break"
+
+    # Input: Home search text.
+    # Output: Filtered library view.
+    # Goal: Make search available from the first screen.
+    # Description: Transfers the entered query into the existing search and paging flow.
+    def _search_from_home(self, _event=None):
+        self.search_var.set("" if self.home_search.get() == "Search movies" else self.home_search.get())
+        self._apply_filter()
+        self._open_library()
+
+    # Input: Current navigation state.
+    # Output: The library screen.
+    # Goal: Expose all existing filters and proper paging.
+    # Description: Hides discovery and opens the searchable grid.
+    def _open_library(self):
+        self.home_view.pack_forget()
+        self.detail_view.pack_forget()
+        self.browser_view.pack(fill="both", expand=True)
+
+    # Input: Current navigation state.
+    # Output: The discovery screen.
+    # Goal: Restore the main screen.
+    # Description: Hides details and library while preserving their state.
+    def _show_home(self):
+        self.browser_view.pack_forget()
+        self.detail_view.pack_forget()
+        self.home_view.pack(fill="both", expand=True)
+
+    # Input: A movie and card parent.
+    # Output: A clickable poster card.
+    # Goal: Give every row a consistent visual layout.
+    # Description: Loads local artwork and opens movie details when clicked.
+    # Input: parent is the card container, movie supplies artwork and metadata.
+    # Output: A card widget with optional captions and watch count.
+    # Goal: Reuse row cards and a clean hero poster.
+    # Description: poster_only hides captions, show_watch_count enables Popular metadata.
+    # Parameter parent. Input: Tk container. Output: Parent reference. Goal: Place card. Description: Owns widgets.
+    # Parameter movie. Input: MovieItem. Output: Metadata source. Goal: Identify title. Description: Supplies card content.
+    # Parameter poster_only. Input: Boolean. Output: Caption visibility. Goal: Simplify hero. Description: Hides row text.
+    # Parameter show_watch_count. Input: Boolean. Output: Count visibility. Goal: Explain ranking. Description: Adds local watches.
+    def _home_card(self, parent, movie, poster_only=False, show_watch_count=False):
+        card = ttk.Frame(parent, style="Tile.TFrame", padding=8, cursor="hand2")
+        source = movie.thumb_path if movie.thumb_path and os.path.isfile(movie.thumb_path) else movie.cover_path
+        try:
+            image = Image.open(source).convert("RGB")
+            image.thumbnail((155, 205))
+            artwork = ImageTk.PhotoImage(image)
+        except Exception:
+            artwork = ImageTk.PhotoImage(Image.new("RGB", (135, 190), TILE_BG))
+        self.home_images.append(artwork)
+        poster = tk.Label(card, image=artwork, bg=TILE_BG, bd=0, cursor="hand2")
+        poster.pack()
+        card.bind("<Button-1>", lambda event: self._show_details(movie))
+        poster.bind("<Button-1>", lambda event: self._show_details(movie))
+        if not poster_only:
+            ttk.Label(card, text=movie.title, style="Title.TLabel", wraplength=155,
+                      justify="center").pack(pady=(8, 2))
+            ttk.Label(card, text=str(movie.year or ""), style="Meta.TLabel").pack()
+            if show_watch_count:
+                ttk.Label(card, text=f"{movie.watch_count} {'watch' if movie.watch_count == 1 else 'watches'}",
+                          style="Meta.TLabel").pack(pady=(2, 0))
+            # Input: Caption widgets on this card.
+            # Output: One child per iteration.
+            # Goal: Make captions open the same movie.
+            # Description: Binds the entire card content to details.
+            for child in card.winfo_children():
+                child.bind("<Button-1>", lambda event: self._show_details(movie))
+        return card
+
+    # Input: The active library after startup or an edit.
+    # Output: Updated featured and collection rows.
+    # Goal: Keep discovery synchronized with watches and metadata.
+    # Description: Rebuilds popularity from play counts and rows from stored genres.
+    def _refresh_home(self):
+        for child in self.home_content.winfo_children():
+            child.destroy()
+        self.home_images.clear()
+        self.featured = self._featured_movies()
+        self.feature_index = 0
+        self.feature_panel = ttk.Frame(self.home_content, style="Tile.TFrame", padding=22, height=340)
+        self.feature_panel.pack(fill="x", pady=(0, 22))
+        self.feature_panel.pack_propagate(False)
+        # Input: Newly rebuilt feature panel.
+        # Output: Reset persistent hero widgets.
+        # Goal: Recreate widgets only during a full home refresh.
+        # Description: Rotation updates widgets in place to avoid flashing and layout churn.
+        self.feature_widgets = None
+        self._draw_feature()
+        popular = sorted(self.all_items, key=lambda movie: (-movie.watch_count, movie.title.casefold()))
+        self._home_row("POPULAR IN YOUR LIBRARY", "Ranked by recorded watches", popular[:8], show_watch_count=True)
+        genres = sorted({genre for movie in self.all_items for genre in movie.genres})
+        # Input: Active genre names.
+        # Output: Genre-to-section mapping.
+        # Goal: Resolve picker destinations after every refresh.
+        # Description: Stores the actual rendered row widgets.
+        self.genre_sections = {}
+        # Input: Home content container.
+        # Output: Genre navigation toolbar.
+        # Goal: Offer a direct route through long collections.
+        # Description: Places a labeled native picker above genre rows.
+        genre_navigation = ttk.Frame(self.home_content)
+        genre_navigation.pack(fill="x", pady=(0, 20))
+        ttk.Label(genre_navigation, text="Explore by genre", font=("Segoe UI Semibold", 17)).pack(side="left", padx=(0, 18))
+        # Input: Fresh genre choices.
+        # Output: Current picker selection.
+        # Goal: Start with an obvious prompt.
+        # Description: This selection is independent of the library filter.
+        self.home_genre_var = tk.StringVar(value="Jump to genre")
+        ttk.Combobox(genre_navigation, textvariable=self.home_genre_var, values=genres,
+                     state="readonly" if genres else "disabled", width=24).pack(side="left")
+        genre_navigation.winfo_children()[-1].bind("<<ComboboxSelected>>", self._jump_to_genre)
+        if not genres:
+            ttk.Label(self.home_content, text="No genres added yet", style="Status.TLabel").pack(anchor="w")
+        for genre in genres:
+            movies = [movie for movie in self.all_items if genre in movie.genres]
+            self.genre_sections[genre] = self._home_row(genre.upper(), f"{len(movies)} titles", movies)
+
+    # Input: event is the native picker selection notification.
+    # Output: Canvas scroll position updated to the selected genre.
+    # Goal: Reveal a genre heading without changing filters or row pages.
+    # Description: Uses the section offset divided by content height to locate the row.
+    # Parameter event. Input: Optional Tk event. Output: None. Goal: Accept binding. Description: Selection notification.
+    def _jump_to_genre(self, event=None):
+        self.update_idletasks()
+        # Input: Current picker selection and rendered mapping.
+        # Output: Target row or None.
+        # Goal: Ignore stale or empty selections.
+        # Description: Looks up the current section widget.
+        section = self.genre_sections.get(self.home_genre_var.get())
+        if section is not None:
+            # Descriptive offset fraction formula. Offset / content height maps pixels
+            # to Canvas yview units so the selected heading aligns with the viewport.
+            self.home_canvas.yview_moveto(max(0, section.winfo_y() - 12) / max(1, self.home_content.winfo_height()))
+
+    # Input: A section title, description, and movies.
+    # Output: A horizontally paged movie section.
+    # Goal: Organize the library by theme without overflowing the screen.
+    # Description: Four cards appear at once with section-local page controls.
+    # Parameter show_watch_count. Input: Boolean. Output: Card presentation option.
+    # Goal: Explain Popular ranking. Description: Passed explicitly to row cards.
+    def _home_row(self, heading, description, movies, show_watch_count=False):
+        section = ttk.Frame(self.home_content)
+        section.pack(fill="x", pady=(0, 25))
+        heading_row = ttk.Frame(section)
+        heading_row.pack(fill="x", pady=(0, 10))
+        ttk.Label(heading_row, text=heading, font=("Segoe UI Semibold", 17)).pack(side="left")
+        ttk.Label(heading_row, text=f"  {description}", style="Status.TLabel").pack(side="left")
+        cards = ttk.Frame(section)
+        cards.pack(fill="x")
+        # Input: Screen width.
+        # Output: Cards that fit in a section page.
+        # Goal: Keep row paging usable on narrower displays.
+        # Description: Uses available width after page padding.
+        visible_count = min(4, max(2, (self.winfo_screenwidth() - 100) // 185))
+        page = [0]
+        def draw():
+            for child in cards.winfo_children():
+                child.destroy()
+            for movie in movies[page[0] * visible_count:(page[0] + 1) * visible_count]:
+                self._home_card(cards, movie, show_watch_count=show_watch_count).pack(side="left", fill="x", expand=True, padx=(0, 12))
+            previous.configure(state="normal" if page[0] else "disabled")
+            following.configure(state="normal" if (page[0] + 1) * visible_count < len(movies) else "disabled")
+        def change(amount):
+            page[0] += amount
+            draw()
+        following = ttk.Button(heading_row, text="Next  ›", width=8,
+                               style="RowNav.TButton", command=lambda: change(1))
+        following.pack(side="right", padx=(6, 0))
+        previous = ttk.Button(heading_row, text="‹  Prev", width=8,
+                              style="RowNav.TButton", command=lambda: change(-1))
+        previous.pack(side="right")
+        draw()
+        return section
+
+    # Input: The current featured index.
+    # Output: Updated hero artwork, text, and controls.
+    # Goal: Show one of five recommendations prominently.
+    # Description: Replaces the hero content while retaining image references.
+    def _draw_feature(self):
+        if self.feature_widgets is not None:
+            self._update_feature_content()
+            return
+        for child in self.feature_panel.winfo_children():
+            child.destroy()
+        if not self.featured:
+            ttk.Label(self.feature_panel, text="Add movies to start discovering.").pack()
+            return
+        movie = self.featured[self.feature_index]
+        artwork = self._home_card(self.feature_panel, movie, poster_only=True)
+        artwork.pack(side="left", padx=(0, 28))
+        copy = ttk.Frame(self.feature_panel, style="Tile.TFrame")
+        copy.pack(side="left", fill="both", expand=True)
+        # Input: Current feature position.
+        # Output: Persistent recommendation position label.
+        # Goal: Advance the counter without rebuilding the panel.
+        # Description: Reuses the feature eyebrow style.
+        feature_position = ttk.Label(copy, text="PICKED FOR YOU  •  %s / %s" % (self.feature_index + 1, len(self.featured)),
+                                     style="FeatureEyebrow.TLabel")
+        feature_position.pack(anchor="w", pady=(8, 12))
+        # Input: Featured movie text.
+        # Output: A heading widget with responsive wrapping.
+        # Goal: Keep long titles within the feature width.
+        # Description: Wrap length follows the allocated text column.
+        feature_title = ttk.Label(copy, text=movie.title, style="FeatureTitle.TLabel", wraplength=500)
+        feature_title.pack(anchor="w")
+        # Input: Featured movie genres.
+        # Output: Supporting text with responsive wrapping.
+        # Goal: Keep genre text inside the hero.
+        # Description: Shares the heading's available width.
+        feature_genres = ttk.Label(copy, text="  /  ".join(movie.genres) or "From your library",
+                                   style="FeatureBody.TLabel", wraplength=500)
+        feature_genres.pack(anchor="w", pady=(12, 20))
+        copy.bind("<Configure>", lambda event: (feature_title.configure(wraplength=max(200, event.width - 12)),
+                                                feature_genres.configure(wraplength=max(200, event.width - 12))))
+        ttk.Button(copy, text="View movie", style="Accent.TButton",
+                   command=lambda: self._show_details(self.featured[self.feature_index])).pack(side="left")
+        ttk.Button(copy, text="Next pick  →", command=lambda: self._rotate_feature(1)).pack(side="left", padx=10)
+        # Input: Hero widgets created above.
+        # Output: References for subsequent in-place updates.
+        # Goal: Avoid destroying visible widgets on every rotation.
+        # Description: Stores poster, counter, title, and genre labels.
+        self.feature_widgets = (artwork.winfo_children()[0], feature_position, feature_title, feature_genres)
+
+    # Input: The current recommendation index and persistent hero widgets.
+    # Output: Updated text and artwork without rebuilding the widget tree.
+    # Goal: Prevent redraw flashes and page jumps during rotation.
+    # Description: Loads the new poster before updating visible content.
+    def _update_feature_content(self):
+        # Input: Current featured index.
+        # Output: Selected movie.
+        # Goal: Keep artwork and actions synchronized.
+        # Description: Uses the same selection as the View movie action.
+        movie = self.featured[self.feature_index]
+        # Input: Selected artwork paths.
+        # Output: Source path for the poster.
+        # Goal: Load local art.
+        # Description: Prefers the thumbnail when it exists.
+        source = movie.thumb_path if movie.thumb_path and os.path.isfile(movie.thumb_path) else movie.cover_path
+        try:
+            # Input: Local source image.
+            # Output: RGB poster image.
+            # Goal: Prepare the replacement before drawing.
+            # Description: Matches the existing hero poster dimensions.
+            image = Image.open(source).convert("RGB")
+            image.thumbnail((155, 205))
+        except Exception:
+            image = Image.new("RGB", (135, 190), TILE_BG)
+        # Input: Prepared poster.
+        # Output: Tk image retained on the label.
+        # Goal: Prevent image garbage collection.
+        # Description: Replaces the prior reference when rotation completes.
+        artwork = ImageTk.PhotoImage(image)
+        self.feature_widgets[0].configure(image=artwork)
+        self.feature_widgets[0].image = artwork
+        self.feature_widgets[0].bind("<Button-1>", lambda event: self._show_details(self.featured[self.feature_index]))
+        self.feature_widgets[0].master.bind("<Button-1>", lambda event: self._show_details(self.featured[self.feature_index]))
+        self.feature_widgets[1].configure(text=f"PICKED FOR YOU  •  {self.feature_index + 1} / {len(self.featured)}")
+        self.feature_widgets[2].configure(text=movie.title)
+        self.feature_widgets[3].configure(text="  /  ".join(movie.genres) or "From your library")
+
+    # Input: A direction of one featured slot.
+    # Output: A newly visible recommendation.
+    # Goal: Let viewers control the rotation.
+    # Description: Wraps the index across the available five picks.
+    def _rotate_feature(self, direction):
+        if self.featured and self.home_view.winfo_ismapped():
+            self.feature_index = (self.feature_index + direction) % len(self.featured)
+            self._draw_feature()
+
+    # Input: Tk's timer.
+    # Output: A scheduled featured advance.
+    # Goal: Rotate recommendations automatically.
+    # Description: Advances every eight seconds while the window exists.
+    def _schedule_feature(self):
+        if self.winfo_exists():
+            self._rotate_feature(1)
+            self.after(8000, self._schedule_feature)
+
     def _build_detail_view(self):
         top = ttk.Frame(self.detail_view, padding=(26, 20, 26, 12))
         top.pack(fill="x")
-        ttk.Button(top, text="Back to library", command=self._show_browser).pack(side="left")
+        ttk.Button(top, text="Back", command=self._show_browser).pack(side="left")
         ttk.Label(top, text="FRAME", font=("Segoe UI Semibold", 15)).pack(side="right")
         body = ttk.Frame(self.detail_view, padding=(42, 22, 42, 38))
         body.pack(fill="both", expand=True)
@@ -761,7 +1390,8 @@ class MovieBrowser(tk.Tk):
         presentation = self.presentation_var.get()
         self.filtered = [
             m for m in self.all_items
-            if (not q or q in m.title.lower())
+            if (not q or q in " ".join((m.title, str(m.year or ""), m.studio,
+                                         m.presentation, *m.genres)).lower())
             and (genre == "All genres" or genre in m.genres)
             and (studio == "All studios" or studio == m.studio)
             and (presentation == "All types" or presentation == m.presentation)
@@ -791,7 +1421,7 @@ class MovieBrowser(tk.Tk):
         try:
             scanned = scan_movies(self.root_dir, self.thumb_size, build_thumbs=False)
             self.catalog.sync(scanned)
-            self.all_items = self.catalog.load()
+            self.all_items = self.catalog.load(self.root_dir)
         except Exception as e:
             messagebox.showerror("Rescan failed", str(e))
             return
@@ -799,6 +1429,7 @@ class MovieBrowser(tk.Tk):
         self.thumb_cache.clear()
         self._refresh_filter_choices()
         self._apply_filter()
+        self._refresh_home()
 
     def _edit_metadata(self, item: MovieItem):
         dialog = tk.Toplevel(self)
@@ -848,9 +1479,18 @@ class MovieBrowser(tk.Tk):
                 item.id, title, int(year_text) if year_text else None,
                 fields["Studio/brand"].get().strip(), type_var.get(), genres,
             )
-            self.all_items = self.catalog.load()
+            self.all_items = self.catalog.load(self.root_dir)
+            if self.detail_view.winfo_ismapped():
+                # Input: Reloaded catalog items and the edited movie ID.
+                # Output: The refreshed movie or None.
+                # Goal: Keep the visible detail panel in sync after saving.
+                # Description: Finds the edited movie in the reloaded catalog.
+                updated_item = next((movie for movie in self.all_items if movie.id == item.id), None)
+                if updated_item is not None:
+                    self._show_details(updated_item)
             self._refresh_filter_choices()
             self._apply_filter()
+            self._refresh_home()
             dialog.destroy()
 
         buttons = ttk.Frame(body)
@@ -877,15 +1517,54 @@ class MovieBrowser(tk.Tk):
             self.page += 1
             self._render_page()
 
+    def _resolve_video_path(self, item: MovieItem) -> Optional[str]:
+        """Resolve the movie against the active library root, not a stale DB path."""
+        root = os.path.normcase(os.path.abspath(normalize_path(self.root_dir)))
+
+        def is_in_root(path: str) -> bool:
+            try:
+                return os.path.commonpath(
+                    (root, os.path.normcase(os.path.abspath(path)))
+                ) == root
+            except (OSError, ValueError):
+                return False
+
+        # Always rescan the current folder first. This also repairs a stored path
+        # when the movie file was moved after the catalog was last refreshed.
+        if item.folder and is_in_root(item.folder) and os.path.isdir(item.folder):
+            current_path = find_video(item.folder)
+            if current_path:
+                return current_path
+
+        # If the database has an old root (for example F:\Title), try the same
+        # movie folder beneath the currently selected root (F:\Movies\Title).
+        folder_name = os.path.basename(os.path.normpath(item.folder))
+        relocated_folder = os.path.join(self.root_dir, folder_name)
+        if os.path.isdir(relocated_folder):
+            current_path = find_video(relocated_folder)
+            if current_path:
+                return current_path
+
+        # Every movie may be named movie.mp4. Searching other movie folders by
+        # filename could play the wrong title, so stop here if this one is missing.
+        return None
+
     def _play(self, item: MovieItem):
-        if not item.video_path or not os.path.isfile(item.video_path):
-            messagebox.showwarning("No video found", f"No playable video file found in:\n{item.folder}")
+        video_path = self._resolve_video_path(item)
+        if not video_path:
+            messagebox.showwarning(
+                "No video found",
+                f"No playable video file found for {item.title} under:\n{self.root_dir}",
+            )
             return
         try:
-            os.startfile(item.video_path)
+            os.startfile(video_path)
+            if video_path != item.video_path:
+                self.catalog.update_video_path(item.id, video_path)
             self.catalog.increment_watch_count(item.id)
-            self.all_items = self.catalog.load()
+            self.all_items = self.catalog.load(self.root_dir)
             self._apply_filter()
+            self._refresh_home()
         except Exception as e:
             messagebox.showerror("Could not open video", str(e))
 
@@ -896,6 +1575,12 @@ class MovieBrowser(tk.Tk):
             messagebox.showerror("Could not open folder", str(e))
 
     def _show_details(self, item: MovieItem):
+        # Input: The currently visible browser view.
+        # Output: The view to restore after details.
+        # Goal: Keep home and library navigation predictable.
+        # Description: Remembers the source screen before hiding it.
+        self.return_view = "home" if self.home_view.winfo_ismapped() else "library"
+        self.home_view.pack_forget()
         self.browser_view.pack_forget()
         self.detail_view.pack(fill="both", expand=True)
         self.detail_title.configure(text=item.title)
@@ -912,7 +1597,7 @@ class MovieBrowser(tk.Tk):
         )
         self.detail_play.configure(
             command=lambda it=item: self._play(it),
-            state=("normal" if item.video_path and os.path.isfile(item.video_path) else "disabled"),
+            state=("normal" if self._resolve_video_path(item) else "disabled"),
         )
         self.detail_edit.configure(command=lambda it=item: self._edit_metadata(it))
         self.detail_folder.configure(command=lambda it=item: self._open_folder(it))
@@ -924,13 +1609,16 @@ class MovieBrowser(tk.Tk):
             image.thumbnail((360, 520))
             self.detail_image = ImageTk.PhotoImage(image)
         except Exception:
-            self.detail_image = ImageTk.PhotoImage(Image.new("RGB", (340, 500), (21, 25, 34)))
+            self.detail_image = ImageTk.PhotoImage(Image.new("RGB", (340, 500), TILE_BG))
         self.detail_poster.configure(image=self.detail_image)
         self.detail_poster.image = self.detail_image
 
     def _show_browser(self):
         self.detail_view.pack_forget()
-        self.browser_view.pack(fill="both", expand=True)
+        if getattr(self, "return_view", "library") == "home":
+            self._show_home()
+        else:
+            self.browser_view.pack(fill="both", expand=True)
 
     def _apply_hover(self, card: ttk.Frame, poster: tk.Label, on: bool):
         # Card background via style swap
@@ -1027,11 +1715,31 @@ class MovieBrowser(tk.Tk):
         self.loading_job = self.after(10, lambda: self._lazy_load(items, i + 1))
 
 
-def main():
-    default_root = os.environ.get("MOVIES_ROOT")
-    if not default_root:
-        default_root = os.path.abspath(os.path.dirname(__file__))
+# Input: The presentation mixin and existing controller.
+# Output: A native movie browser with the rebuilt views.
+# Goal: Preserve catalog and command behavior while replacing the UI.
+# Description: Presentation methods take precedence over legacy view builders.
+class MovieBrowser(MovieShelfPresentation, MovieShelfController):
+    pass
 
+
+# Input: Command line arguments and the script or packaged executable location.
+# Output: Opens the movie browser or completes the requested maintenance command.
+# Goal: Select and validate the requested movie library operation.
+# Description: Parses options, checks the root and dimensions, then dispatches.
+def main():
+    # Input: sys.executable for a packaged app, or __file__ for a Python script.
+    # Output: The folder containing the executable or script.
+    # Goal: Find the library beside the app after moving it to another computer.
+    # Description: Ignores the current directory and old environment overrides.
+    default_root = os.path.dirname(
+        os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__)
+    )
+
+    # Input: The movie browser command line options.
+    # Output: An argument parser with the supported options.
+    # Goal: Interpret the selected operation and its settings.
+    # Description: Defines the command line interface.
     parser = argparse.ArgumentParser(description="Movie Browser")
     parser.add_argument("--root", default=default_root, help="Root movies folder")
     parser.add_argument("--cols", type=int, default=6, help="Columns in grid")
@@ -1041,25 +1749,50 @@ def main():
     parser.add_argument("--build-thumbs", action="store_true", help="Build thumb.jpg in each folder then exit")
     parser.add_argument("--fetch-covers", action="store_true", help="Download IMDb primary posters for folders that do not already have a cover",
     )
+    # Input: Command line arguments parsed by parser.
+    # Output: The selected options and values.
+    # Goal: Use the requested settings.
+    # Description: Holds the parsed command line namespace.
     args = parser.parse_args()
 
-    root = args.root
+    # Input: The root argument.
+    # Output: An absolute, normalized movie library path.
+    # Goal: Use one consistent root path throughout the operation.
+    # Description: Expands and normalizes the selected library folder.
+    root = os.path.abspath(normalize_path(args.root))
+    # Input: The requested thumbnail width and height in pixels.
+    # Output: A width and height tuple in pixels.
+    # Goal: Pass thumbnail dimensions to maintenance commands.
+    # Description: Groups the two dimensions expected by thumbnail helpers.
     thumb_size = (args.thumb_w, args.thumb_h)
 
+    if not os.path.isdir(root):
+        raise FileNotFoundError(f"Movie folder does not exist: {root}")
+    if min(args.cols, args.rows, args.thumb_w, args.thumb_h) < 1:
+        parser.error("Columns, rows, and thumbnail dimensions must be at least 1.")
+
     if args.fetch_covers:
-        if not os.path.isdir(root):
-            raise SystemExit(f"Not a directory: {root}")
+        # Input: Cover download results for the selected root.
+        # Output: Downloaded, skipped, and failed folder counts.
+        # Goal: Report the maintenance result.
+        # Description: Holds the three counts returned by the cover fetcher.
         downloaded, skipped, failed = fetch_missing_covers(root)
         print(f"Done: {downloaded} downloaded, {skipped} already had covers, {failed} not downloaded")
         return
 
     if args.build_thumbs:
-        if not os.path.isdir(root):
-            raise SystemExit(f"Not a directory: {root}")
+        # Input: Thumbnail generation results for the selected root.
+        # Output: The number of thumbnails created.
+        # Goal: Report the maintenance result.
+        # Description: Holds the count returned by the thumbnail builder.
         made = build_thumbnails(root, thumb_size)
         print(f"Built {made} thumbnails ({THUMB_NAME})")
         return
 
+    # Input: The validated root and browser layout options.
+    # Output: The movie browser window.
+    # Goal: Display the selected library.
+    # Description: Holds the application until its event loop exits.
     app = MovieBrowser(
         root_dir=root,
         cols=args.cols,
@@ -1072,4 +1805,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, sqlite3.Error) as error:
+        # Keep the error visible when the script was opened by double-clicking.
+        messagebox.showerror("Movie Shelf could not finish", str(error))
+        raise SystemExit(1) from error
