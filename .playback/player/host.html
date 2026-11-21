@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Movie Shelf Host</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/host.js" defer></script>
+</head>
+<body>
+  <main class="setup-page">
+    <h1>Share movies from this PC</h1>
+    <p>Choose the folder with your movies, then choose the address your other PCs will use. Keep this window open while sharing.</p>
+    <form id="host-form">
+      <label>Movie folder <button id="folder" type="button">Choose folder</button></label>
+      <output id="folder-name">No folder chosen</output>
+      <label for="address">This PC's address</label>
+      <select id="address"></select>
+      <label for="password">Create a password, at least 12 characters</label>
+      <input id="password" type="password" minlength="12" required autocomplete="new-password">
+      <button id="start" type="submit">Start sharing</button>
+    </form>
+    <p id="host-status" role="status"></p>
+    <section id="sharing" hidden>
+      <h2>Sharing is on</h2>
+      <p>On the viewer, choose Add server. Enter this address, your password, and this pairing code.</p>
+      <p>Address <strong id="share-address"></strong></p>
+      <p>Pairing code <strong id="share-code"></strong></p>
+      <p>Your password stays private. Only give it and the pairing code to people you want to let watch.</p>
+      <button id="stop" type="button">Stop sharing</button>
+    </section>
+  </main>
+</body>
+</html>

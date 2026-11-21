@@ -1,8 +1,10 @@
-# Changelog
+﻿# Changelog
 
 ## Unreleased
 
-- Add source dependency lists and Windows verification workflow
-- Exclude private collections, local databases, artwork and generated packages from Git
-- Add source-release packaging and maintainer instructions
-- Document security reporting, data behavior and third-party rights
+- Merge the Rust host and Electron host/viewer replacement into master
+- Remove the superseded Python app, tests, launchers and dependency lists
+- Build and test Windows delivery archives in GitHub Actions
+- Prepare draft releases with the Windows ZIP, source ZIP and SHA-256 checksums
+- Include MIT licensing and bundled dependency notices
+- Update setup, contribution, security and data guidance for the current app

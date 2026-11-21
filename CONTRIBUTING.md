@@ -1,26 +1,35 @@
-# Contributing
+﻿# Contributing
 
-Open an issue before starting a large change. Explain the problem, expected behavior and how to reproduce it with a small synthetic library.
+Open an issue before a large change. Explain the problem and reproduce it with synthetic media rather than a private collection.
 
-## Local checks
+## Build and check
 
-Use Windows and Python 3.13 with Tcl/Tk enabled. From the repository root, run
+Use Windows 10 or 11, Node.js 24, npm, stable Rust with the MSVC build tools, and Git for Windows. The packager uses the OpenSSL executable, DLLs and license supplied by Git for Windows.
+
+Run from the repository root
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python -B -m unittest discover -s .tests -v
-.\.venv\Scripts\python -m PyInstaller --noconfirm --distpath .build-ui\dist --workpath .build-ui\work movie_shelf.spec
-.\.venv\Scripts\python .tests\verify_movie_shelf_package.py .build-ui\dist\movie_shelf.exe
+npm ci --prefix .playback/player
+rustup component add rust-docs
+cargo test --locked --manifest-path .playback/server/Cargo.toml
+powershell -NoProfile -ExecutionPolicy Bypass -File .playback/build-release.ps1
 ```
 
-Use temporary fixtures rather than a real collection. Startup and Rescan can rename video files.
+The build produces `.playback/delivery/MovieShelf-win64.zip`. Extract it to a temporary folder. With an MP4 fixture you own, run
+
+```powershell
+node .playback/verification/setup-flow.cjs "C:\Temp\MovieShelf" "C:\Temp\sample.mp4"
+```
+
+The package folder must contain both executables. The test uses loopback ports and disposable profiles and checks pairing, source persistence, navigation, local and remote playback, fullscreen, byte ranges and stale media IDs. Rust currently has no unit tests, so `cargo test` checks compilation but does not replace this package test.
+
+GitHub Actions generates an original test-pattern clip with FFmpeg. That clip and FFmpeg are test tools, not shipped assets.
 
 ## Pull requests
 
 - Describe the change and checks you actually ran
-- Keep movie files, artwork, databases, secrets and personal paths out of commits and screenshots
 - Preserve existing comments and keep changes focused
-- Only contribute material you have permission to share
+- Keep media, artwork, catalogs, credentials, pairing codes and private paths out of commits and screenshots
+- Only contribute material you have permission to share, under the project's MIT license
 
-The root-folder exclusions in `.gitignore` protect the private collection in this workspace. Add an explicit exception when introducing a legitimate source folder. Review `git diff --cached --stat` before committing.
+The root-folder exclusions in `.gitignore` protect the private collection in this workspace. Explicitly allow any legitimate new source folder. Review `git diff --cached --stat` before committing.

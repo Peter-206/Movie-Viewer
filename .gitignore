@@ -3,6 +3,21 @@
 /*/
 !/.github/
 !/.tests/
+!/.playback/
+!/future implementaions/
+
+# Rust/Electron source lives here, but generated files and identities do not.
+node_modules/
+target/
+.playback/player/dist/
+.playback/delivery/
+.playback/verification/.tools/
+.playback/verification/shots/
+.playback/verification/.package-test/
+**/sources.json
+**/token.txt
+**/identity/
+/future implementaions/CONVERSATION-*.md
 
 # Local catalogs, backups, exports, media and artwork
 *.db

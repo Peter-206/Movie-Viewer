@@ -1,28 +1,21 @@
-# Data and rights
+﻿# Data and rights
 
-## Code and media are separate
+## Code and media
 
-The repository contains application source, tests and documentation. It does not include movies, posters, downloaded metadata or a populated catalog. Any code license applies only to material the copyright holders have authority to license. It does not grant rights to movies, artwork, trademarks or third-party data.
+Original project code uses the MIT License in the root LICENSE file. Commercial use is allowed without contacting the author. Copies and substantial portions must retain the copyright and license notices. MIT does not require a visible credit screen or endorsement.
 
-Only use and distribute media and data when you have the necessary rights. Having a local copy does not establish permission to publish it. Use synthetic titles and original artwork for public tests and screenshots.
+This license does not grant rights to movies, artwork, trademarks or third-party data. Only share media and artwork when you have the necessary rights. Having a local file does not establish permission to distribute it.
 
-## Local data and network requests
+## Stored information
 
-The app stores its catalog in `movies.db` under the selected collection root. That database can contain titles, metadata and local filesystem paths. Artwork and thumbnails are stored in movie folders. Treat these files as private and leave them out of issues and releases.
+The Electron viewer saves local folder paths, remote addresses, certificate pins and password-derived bearer credentials in `sources.json` under its user data directory. The host creates a local identity folder containing TLS certificates, private keys and a credential file. Treat these files as secrets. Password-derived credentials can authorize requests even though the plain password is not saved.
 
-The existing cover-fetch feature sends movie search text to an IMDb suggestion endpoint and downloads images from returned URLs. Those providers receive ordinary network request information, including the requesting IP address. Local browsing does not require cover fetching.
+The app scans selected movie folders and reads local `cover.jpg` or `thumb.jpg` artwork. The host builds its catalog at startup. It does not use the legacy `movies.db` file or rename movie files. Existing private databases can stay on disk but are not included in Git or releases.
 
-## IMDb restrictions
+## Network behavior
 
-An accessible endpoint is not proof of permission to extract or redistribute its contents. IMDb restricts automated extraction and provides separate terms for its datasets. Do not assume the existing cover-fetch implementation is authorized for your use or that attribution makes redistribution permissible. Confirm permission or use artwork you have rights to supply locally before relying on this feature.
+Remote sources use HTTPS on port 8443. The viewer verifies the host using its pairing code and saved certificate. Configured hosts receive authenticated catalog, artwork and media requests. Local sources are read directly from disk.
 
-Official references
+The Rust and Electron app does not include the old IMDb cover downloader. Supply local artwork you have permission to use. Movie files, artwork, populated catalogs, pairing credentials and private settings do not belong in releases.
 
-- [IMDb conditions of use](https://www.imdb.com/conditions/)
-- [IMDb data use in software](https://help.imdb.com/article/imdb/general-information/can-i-use-imdb-data-in-my-software/G5JTRESSHJBBHTGX)
-
-## License status
-
-Original project code is available under the [MIT License](LICENSE), with credit to Peter-206 through the required copyright and license notices. Commercial use is allowed without contacting the author. The license does not require a visible credit screen or endorsement.
-
-This document records project behavior and unresolved rights questions. It does not certify legal compliance.
+This document describes the current implementation. It does not certify legal compliance.

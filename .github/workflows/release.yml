@@ -1,4 +1,4 @@
-name: Prepare source release
+name: Prepare Windows release
 
 on:
   push:
@@ -17,18 +17,13 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Require an explicit license choice
-        run: git ls-files --error-unmatch LICENSE
-      - name: Package tracked source and checksum
-        shell: pwsh
-        run: |
-          git archive --format=zip --prefix=MovieShelf/ -o MovieShelf-source.zip HEAD
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          (Get-FileHash MovieShelf-source.zip -Algorithm SHA256).Hash.ToLower() + '  MovieShelf-source.zip' | Set-Content SHA256SUMS.txt -Encoding ascii
-      - name: Create a draft for review
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release-assets
+      - name: Create a draft with the tested Windows package
         env:
           GH_TOKEN: ${{ github.token }}
-          # Input: Triggering Git tag. Output: Tag name. Goal: Select release.
-          # Description: Passed as data instead of interpolated shell code.
+          # Input: Triggering tag. Output: Tag name. Goal: Select release. Description: Passed as data rather than shell source.
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$env:RELEASE_TAG" MovieShelf-source.zip SHA256SUMS.txt --verify-tag --draft --generate-notes
+        run: gh release create "$env:RELEASE_TAG" release-assets/MovieShelf-win64.zip release-assets/MovieShelf-source.zip release-assets/SHA256SUMS.txt --verify-tag --draft --prerelease --generate-notes

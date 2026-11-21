@@ -1,13 +1,16 @@
-# Third-party notices
+﻿# Third-party notices
 
-Source releases do not bundle Python or dependency packages. Install dependencies from their upstream distributions and retain their included notices when redistributing them.
+Movie Shelf's original code is licensed under MIT. The Windows package also contains third-party software with its own terms.
 
-| Component | Role | Upstream license information |
-| --- | --- | --- |
-| Python and Tkinter | Runtime and GUI | [Python license](https://docs.python.org/3/license.html) |
-| Tcl/Tk | GUI runtime included with Windows Python | [Tcl/Tk license](https://www.tcl.tk/software/tcltk/license.html) |
-| Pillow | Images | [Pillow license](https://github.com/python-pillow/Pillow/blob/main/LICENSE) |
-| PyInstaller | Optional executable builder | [PyInstaller license and bootloader exception](https://pyinstaller.org/en/stable/license.html) |
-| psutil | Package verification only | [psutil license](https://github.com/giampaolo/psutil/blob/master/LICENSE) |
+| Component | Included notices |
+| --- | --- |
+| Electron and its Node.js runtime | Package-root `LICENSE` |
+| Chromium and its components, including media libraries | Package-root `LICENSES.chromium.html` |
+| OpenSSL executable and DLLs from Git for Windows | `third-party-notices/OpenSSL-LICENSE.txt` |
+| Rust host dependencies | Per-crate license files under `third-party-notices` and `rust-dependencies.json` |
+| Rust standard library | `third-party-notices/Rust-standard-library-COPYRIGHT.html` and `Rust-runtime-licenses` |
+| Movie Shelf | `PROJECT-LICENSE.txt` |
 
-These links identify upstream projects. They do not replace required license texts. Before publishing a bundled executable, inventory the actual bundle, include the applicable full license texts for its runtime, libraries and transitive components, and review their redistribution requirements. The source-release workflow deliberately does not publish an executable.
+The build script copies notices from the actual installed dependencies. A missing crate license file or Chromium notice stops packaging. Keep these files with the application when redistributing it. Source manifests and lockfiles identify build dependencies, including Electron Packager, which is not installed for end users.
+
+This inventory does not grant rights to movies, artwork or trademarks. Codec patent and other distribution requirements can depend on your use and jurisdiction. Review the exact release contents before distributing modified builds.

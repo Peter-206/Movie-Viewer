@@ -1,0 +1,83 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Movie Shelf Playback</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/renderer.js" defer></script>
+</head>
+<body>
+  <main class="viewer-shell">
+    <aside class="sidebar">
+      <h1>Movie Shelf</h1>
+      <nav aria-label="Main navigation">
+        <button type="button" data-page-link="discover" aria-current="page">Discover</button>
+        <button type="button" data-page-link="library">Library</button>
+        <button type="button" data-page-link="sources">Sources</button>
+        <button type="button" data-page-link="player">Movie player</button>
+      </nav>
+      <div class="sidebar-sources">
+        <h2>Your sources</h2>
+        <span id="sources-status" role="status"></span>
+      </div>
+    </aside>
+    <div class="viewer-content">
+    <section class="page-view" data-page="discover">
+      <header class="viewer-header"><div><span class="header-caption">Your connected movie library</span><h2>Discover</h2></div><button id="refresh" type="button">Refresh</button></header>
+      <p id="catalog-status" role="status">Loading libraries…</p>
+      <h2 class="section-heading">Start watching</h2>
+      <ul id="discover-movies" class="movie-grid" aria-label="Featured movies"></ul>
+      <button type="button" data-page-link="library" class="text-action">Browse the full library</button>
+    </section>
+    <section class="page-view" data-page="library" hidden>
+      <header class="viewer-header"><div><span class="header-caption">Every movie from your connected sources</span><h2>Library</h2></div><div class="library-controls"><label for="search" class="visually-hidden">Search all libraries</label><input id="search" type="search" placeholder="Search all libraries"></div></header>
+      <h2 id="movies-heading" class="section-heading">All movies</h2>
+      <p id="library-status" role="status" hidden>No movies match your search.</p>
+      <ul id="movies" class="movie-grid" aria-label="Combined movie libraries"></ul>
+    </section>
+    <section class="page-view" data-page="sources" hidden>
+      <header class="viewer-header"><div><span class="header-caption">This PC and other PCs</span><h2 id="sources-heading">Sources</h2></div></header>
+      <section id="first-run" class="setup-panel" hidden><h2>Choose where your movies are</h2><p>Add a server on another PC, or choose a movie folder on this PC. You can add more sources later.</p></section>
+      <p id="source-action-status" role="status"></p>
+      <ul id="sources-list" aria-label="Saved sources"></ul>
+      <div class="source-controls"><button id="add-server" type="button">Add server</button><button id="add-local" type="button">Add local folder</button></div>
+    </section>
+    <section class="page-view" data-page="player" hidden>
+      <header class="viewer-header"><div><span class="header-caption">Ready when you are</span><h2>Movie player</h2></div><button id="back-to-library" type="button">Back to library</button></header>
+      <section class="player-panel">
+        <div class="selection">
+          <div><span class="header-caption">Now selected</span><h2 id="selected-title">Select a movie</h2></div>
+          <label for="playback-source">Play from</label>
+          <select id="playback-source" aria-label="Playback source"></select>
+        </div>
+        <video controls playsinline preload="none" aria-label="Selected movie"></video>
+        <div class="details">
+          <p id="status" role="status">Choose a movie from Discover or Library</p>
+          <button id="retry" type="button" hidden>Retry playback</button>
+          <label for="subtitles">External subtitles</label>
+          <input id="subtitles" type="file" accept=".srt,.vtt">
+        </div>
+        <p id="subtitle-status" role="status"></p>
+      </section>
+    </section>
+    <dialog id="server-dialog">
+      <form id="server-form">
+        <h2>Add a server</h2>
+        <p>Open MovieShelfHost on the other PC and start sharing. Copy its address and pairing code here.</p>
+        <label for="server-name">Name, optional</label>
+        <input id="server-name" type="text" maxlength="80" placeholder="Living room PC">
+        <label for="server-address">Host address</label>
+        <input id="server-address" type="text" inputmode="decimal" required placeholder="192.168.1.42">
+        <label for="server-code">Pairing code</label>
+        <input id="server-code" type="text" required maxlength="14" placeholder="12 characters">
+        <label for="server-password">Host password</label>
+        <input id="server-password" type="password" required autocomplete="off">
+        <p id="server-error" role="alert"></p>
+        <div class="dialog-actions"><button id="cancel-server" type="button">Cancel</button><button id="save-server" type="submit">Add server</button></div>
+      </form>
+    </dialog>
+    </div>
+  </main>
+</body>
+</html>
