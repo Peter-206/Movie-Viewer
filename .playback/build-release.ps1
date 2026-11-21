@@ -69,7 +69,8 @@ $rustNoticeRoot = Join-Path $rustToolchainRoot 'share\doc\rust'
 Copy-Item -LiteralPath (Join-Path $rustNoticeRoot 'COPYRIGHT-library.html') -Destination (Join-Path $noticeFolder 'Rust-standard-library-COPYRIGHT.html') -Force
 Copy-Item -LiteralPath (Join-Path $rustNoticeRoot 'licenses') -Destination (Join-Path $noticeFolder 'Rust-runtime-licenses') -Recurse -Force
 # Input: Locked dependency graph. Output: Cargo package metadata. Goal: Identify bundled Rust libraries. Description: Fetching is complete after the release build.
-$cargoMetadata = & cargo metadata --locked --offline --format-version 1 --manifest-path (Join-Path $serverFolder 'Cargo.toml')
+# Metadata includes other target platforms whose crates a Windows build may not have downloaded yet.
+$cargoMetadata = & cargo metadata --locked --format-version 1 --manifest-path (Join-Path $serverFolder 'Cargo.toml')
 if ($LASTEXITCODE -ne 0) { throw 'Rust dependency inventory failed' }
 # Input: Metadata JSON. Output: Parsed package list. Goal: Copy actual dependency notices. Description: The local project is covered by PROJECT-LICENSE.txt.
 $dependencyGraph = $cargoMetadata | ConvertFrom-Json
