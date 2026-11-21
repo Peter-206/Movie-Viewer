@@ -1,56 +1,13 @@
 # Movie Shelf
 
-Movie Shelf browses a local movie collection and opens movies in the Windows default player. Keep the application beside the collection's movie folders and `movies.db`
+Movie Shelf is a Windows movie viewer with a separate host app for sharing a movie folder from another PC. The viewer combines the servers and local folders you add. Local folders are read directly from disk.
 
-## Run
+## Get started
 
-Double-click `run.bat` or `movie_shelf.exe`. The launcher prefers the executable. To run from source, install Pillow and use the following command
+Download or build the ZIP in `.playback/delivery/MovieShelf-win64.zip`, extract it, and open `MovieShelfViewer.exe`. To share a folder from another PC, run `MovieShelfHost.exe` on that PC. The host window shows the address and pairing code needed by the viewer.
 
-```powershell
-python movie_shelf.py
-```
+For simple step by step setup, including passwords, local folders, and multiple PCs, read the [setup guide](.playback/README.md).
 
-Source delivery needs both `movie_shelf.py` and `movie_shelf_ui.py`. The standalone executable includes both modules
+## Build from source
 
-Use an explicit root to open a different collection
-
-```powershell
-python movie_shelf.py --root "E:\Movies"
-```
-
-The default collection is beside the source script or executable, regardless of the current working directory. Keep `movies.db` with the collection when moving it to another drive
-
-## Library
-
-- Discover presents recommendations, popular movies and genre shelves
-- Library combines search, genre, studio and type filters with six sort orders
-- Select a poster to open details, play the movie, edit metadata or open its folder
-- Right-click a library poster to edit metadata
-- Rescan finds folder changes and refreshes the catalog
-- Press F1 for the complete keyboard guide
-
-Startup and Rescan normalize the selected main video's name to `movie` with its existing extension. Other videos remain in place and existing destination files are preserved. Test a new setup against a copy of your collection when evaluating that behavior
-
-## Artwork tools
-
-`buildthumbs.bat` creates missing thumbnails from local covers. Existing thumbnails remain intact. The executable and source also accept maintenance flags directly
-
-```powershell
-.\movie_shelf.exe --build-thumbs
-.\movie_shelf.exe --fetch-covers
-```
-
-Cover fetching uses the existing IMDb matching flow and needs internet access. Existing covers remain intact
-
-## Build and verify
-
-The source uses Python, Tkinter and Pillow. Building the Windows executable also requires PyInstaller
-
-```powershell
-python -B -m unittest discover -s .tests -v
-python -m PyInstaller --noconfirm --distpath .build-ui\dist --workpath .build-ui\work movie_shelf.spec
-```
-
-Tests use temporary libraries. Build output stays in a hidden folder because ordinary top-level folders are interpreted as movie entries
-
-The rebuild's behavior checklist is in `REBUILD-CONTRACT.md`. Product context, design decisions and agent responsibilities are recorded in `PRODUCT.md`, `DESIGN.md` and `REBUILD-PROGRESS.md`
+The current app uses Rust for the host service and Electron for the desktop apps. Build and package it with `.playback/build-release.ps1`. The ZIP contains both Windows executables and their required helper files. Python is not used by the app or its build.
