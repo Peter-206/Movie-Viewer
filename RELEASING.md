@@ -1,26 +1,26 @@
 # Publishing a Windows release
 
-The default branch is `master`. A version tag runs the Windows build and packaged-app verification. After those pass, the workflow creates a draft pre-release with the tested Windows ZIP, source ZIP and SHA-256 checksums. It does not publish automatically.
+The default branch is `master`. Builds, verification and releases are manual. Pushing a version tag does not run checks or create a release.
 
 ## Repository setup
 
-Enable GitHub Actions in Settings, then Actions, then General. Enable secret scanning, push protection, Dependabot alerts and private vulnerability reporting where your repository settings support them. Protect `master` with pull requests and the `verify` check after its first successful run.
+Enable secret scanning, push protection, Dependabot alerts and private vulnerability reporting where your repository settings support them. If branch protection requires the old `verify` check, remove that requirement because it no longer runs.
 
 Keep the repository description and About topics focused on the Windows Rust and Electron app. Avoid screenshots containing private movie collections or credentials.
 
 ## Create a release
 
-1. Push `master` and wait for Verify Windows app to pass on GitHub
-2. Update `CHANGELOG.md` with reviewed changes and the date, then commit and push it
-3. Choose an unused version tag matching `.playback/player/package.json`, its lockfile and `.playback/server/Cargo.toml`. Update versions and lockfiles together for later releases
-4. For the initial `0.1.0` version, run the following commands
+1. Update `CHANGELOG.md` with reviewed changes and the date
+2. Choose an unused version tag matching `.playback/player/package.json`, its lockfile and `.playback/server/Cargo.toml`. Update versions and lockfiles together for later releases
+3. Build and test locally using [CONTRIBUTING.md](CONTRIBUTING.md), then complete the package review below
+4. Commit and push the tested changes to `master`, then tag that commit. For the initial `0.1.0` version, the commands are
 
 ```powershell
 git tag -a v0.1.0 -m "Movie Shelf 0.1.0"
 git push origin v0.1.0
 ```
 
-Open Actions and wait for Prepare Windows release to finish. Open Releases and review the draft. Confirm it contains `MovieShelf-win64.zip`, `MovieShelf-source.zip` and `SHA256SUMS.txt`. Keep the first version marked as a pre-release while evaluating it, then publish when ready.
+Open Releases on GitHub and create a draft for the pushed tag. Attach the tested `.playback/delivery/MovieShelf-win64.zip`. GitHub provides source archives for the tag. Keep the first version marked as a pre-release while evaluating it, then publish when ready.
 
 If the tag already exists, choose the next unused version and update app metadata first. Do not move a published tag. Fix failed checks before making another release.
 

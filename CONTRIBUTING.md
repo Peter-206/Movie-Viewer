@@ -23,7 +23,7 @@ node .playback/verification/setup-flow.cjs "C:\Temp\MovieShelf" "C:\Temp\sample.
 
 The package folder must contain both executables. The test uses loopback ports and disposable profiles and checks pairing, source persistence, navigation, local and remote playback, fullscreen, byte ranges and stale media IDs. Rust currently has no unit tests, so `cargo test` checks compilation but does not replace this package test.
 
-GitHub Actions generates an original test-pattern clip with FFmpeg. That clip and FFmpeg are test tools, not shipped assets.
+Run these checks locally before sharing a build. Synthetic test clips can be generated with FFmpeg. Test clips and FFmpeg are not shipped assets.
 
 ## Pull requests
 

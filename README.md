@@ -1,7 +1,5 @@
 # Movie Shelf
 
-[![Windows checks](https://github.com/Peter-206/Movie-Viewer/actions/workflows/verify.yml/badge.svg)](https://github.com/Peter-206/Movie-Viewer/actions/workflows/verify.yml)
-
 Movie Shelf is a Windows movie viewer with a separate host app for sharing a movie folder from another PC. The viewer combines the servers and local folders you add. Local folders are read directly from disk.
 
 ## Get started
