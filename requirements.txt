@@ -1,0 +1,2 @@
+# Runtime dependency. Tkinter comes with the Windows Python installer.
+Pillow==12.0.0

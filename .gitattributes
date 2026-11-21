@@ -1,0 +1,16 @@
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.bat text eol=crlf
+
+# Keep development notes and tests out of source release archives.
+.github export-ignore
+.tests export-ignore
+.gitignore export-ignore
+.gitattributes export-ignore
+DESIGN.md export-ignore
+PRODUCT.md export-ignore
+REBUILD-CONTRACT.md export-ignore
+REBUILD-LESSONS.md export-ignore
+REBUILD-PROGRESS.md export-ignore

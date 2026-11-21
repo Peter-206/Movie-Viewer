@@ -1,0 +1,47 @@
+# This workspace also holds a private movie collection. New root folders must
+# be explicitly allowed here before they can be committed.
+/*/
+!/.github/
+!/.tests/
+
+# Local catalogs, backups, exports, media and artwork
+*.db
+*.db-*
+*.db.*
+*.sqlite*
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.m4v
+*.wmv
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.srt
+*.ass
+*.lnk
+/folder-renames-*.json
+/movie_suggestions.csv
+/title-cleanup-lesson.md
+
+# Secrets, generated packages and Python caches
+.env
+.env.*
+*.pem
+*.key
+*.exe
+*.zip
+*.7z
+*.py[cod]
+__pycache__/
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.build*/
+Thumbs.db
+.DS_Store

@@ -1,5 +1,19 @@
 # Movie Shelf
 
+[![Windows checks](https://github.com/Peter-206/Movie-Viewer/actions/workflows/verify.yml/badge.svg)](https://github.com/Peter-206/Movie-Viewer/actions/workflows/verify.yml)
+
+A Windows desktop browser for your own local movie collection. Original code is available under the [MIT License](LICENSE). Commercial use is allowed, with the copyright and license notices preserved.
+
+Install source dependencies with Python 3.13 and Tcl/Tk enabled
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+See [contribution instructions](CONTRIBUTING.md), [data and rights](DATA-AND-RIGHTS.md), [third-party notices](THIRD-PARTY-NOTICES.md), [security guidance](SECURITY.md) and the [release checklist](RELEASING.md).
+
+Release archives contain source code. They do not include movies, artwork, a database, Python or a prebuilt executable. The existing IMDb cover downloader has unresolved provider-permission requirements described in the data and rights guide.
+
 Movie Shelf browses a local movie collection and opens movies in the Windows default player. Keep the application beside the collection's movie folders and `movies.db`
 
 ## Run

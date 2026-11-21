@@ -1,0 +1,34 @@
+name: Prepare source release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+  release:
+    needs: verify
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require an explicit license choice
+        run: git ls-files --error-unmatch LICENSE
+      - name: Package tracked source and checksum
+        shell: pwsh
+        run: |
+          git archive --format=zip --prefix=MovieShelf/ -o MovieShelf-source.zip HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          (Get-FileHash MovieShelf-source.zip -Algorithm SHA256).Hash.ToLower() + '  MovieShelf-source.zip' | Set-Content SHA256SUMS.txt -Encoding ascii
+      - name: Create a draft for review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Input: Triggering Git tag. Output: Tag name. Goal: Select release.
+          # Description: Passed as data instead of interpolated shell code.
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$env:RELEASE_TAG" MovieShelf-source.zip SHA256SUMS.txt --verify-tag --draft --generate-notes
